@@ -536,6 +536,10 @@ class App(ctk.CTk):
             options, list(AUDIO_FORMATS), 200, command=lambda _v: self._update_size()
         )
         self.container_menu = option_menu(options, ["mp4", "mkv"], 110)
+        self.track_map = {"Оригинал": ("", [])}
+        self.track_menu = option_menu(
+            options, ["Оригинал"], 220, command=lambda _v: self._update_size()
+        )
         # Субтитры — отдельной строкой под качеством, чтобы не обрезались на узком окне.
         self.sub_row = ctk.CTkFrame(preview, fg_color="transparent")
         self.sub_row.grid(row=3, column=1, sticky="w", padx=(6, 18), pady=(0, 18))
@@ -592,14 +596,18 @@ class App(ctk.CTk):
         self.audio_menu.pack_forget()
         self.size_label.pack_forget()
         self.container_menu.pack_forget()
-        (self.quality_menu if is_video else self.audio_menu).pack(side="left")
+        self.track_menu.pack_forget()
         self.sub_btn.pack_forget()
         self.sub_label.pack_forget()
+        (self.quality_menu if is_video else self.audio_menu).pack(side="left")
         if is_video:
             self.container_menu.pack(side="left", padx=(10, 0))
+            if self.info is not None and len(self.info.audio_langs) > 1:
+                self.track_menu.pack(side="left", padx=(10, 0))
+            # Субтитры — отдельной строкой под качеством (sub_row), здесь только кнопка и подпись.
             self.sub_btn.pack(side="left")
             self.sub_label.pack(side="left", padx=10)
-        if not is_video:
+        else:
             self.sub_row.grid_remove()
         self.size_label.pack(side="left", padx=14)
         self._update_size()
@@ -706,6 +714,8 @@ class App(ctk.CTk):
             subtitles=list(self.sub_selection) if self.mode_switch.get() == MODE_VIDEO else [],
             embed_subs=self.sub_embed,
             default_sub=self.sub_default if self.mode_switch.get() == MODE_VIDEO else "",
+            audio_track=self.track_map.get(self.track_menu.get(), ("", []))[0],
+            audio_codes=self.track_map.get(self.track_menu.get(), ("", []))[1],
             thumbnail=bool(self.settings["thumb_enabled"]),
         )
         self._remember_download()
@@ -750,6 +760,8 @@ class App(ctk.CTk):
                 subtitles=list(self.sub_selection) if is_video else [],
                 embed_subs=self.sub_embed,
                 default_sub=self.sub_default if is_video else "",
+                audio_track=self.track_map.get(self.track_menu.get(), ("", []))[0],
+                audio_codes=self.track_map.get(self.track_menu.get(), ("", []))[1],
                 thumbnail=bool(self.settings["thumb_enabled"]),
             )
             self.jobs.append(job)
@@ -786,6 +798,14 @@ class App(ctk.CTk):
             preferred = int(self.settings["video_quality"])
             best = next((h for h in choices if h <= preferred), choices[-1])
             self.quality_menu.set(f"{best}p")
+        self.track_map = {"Оригинал": ("", [])}
+        if len(info.audio_langs) > 1:
+            for code, label in info.audio_langs:
+                self.track_map[f"{label} ({code})"] = (code, [])
+            self.track_map["Все дорожки"] = ("*", [code for code, _ in info.audio_langs])
+        self.track_menu.configure(values=list(self.track_map))
+        self.track_menu.set("Оригинал")
+        self._show_options()
         self._update_size()
         self._update_sub_label()
         if self.mode_switch.get() == MODE_VIDEO:

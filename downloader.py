@@ -44,6 +44,7 @@ class VideoInfo:
     sizes: dict = field(default_factory=dict)  # высота -> размер видеопотока, байт
     audio_size: int | None = None  # размер лучшего аудиопотока, байт
     sub_langs: list = field(default_factory=list)  # [(код языка, автоматические?)]
+    audio_langs: list = field(default_factory=list)  # [(код языка, название)] — для видео с дубляжом
 
 
 @dataclass
@@ -68,6 +69,8 @@ class Job:
     subtitles: list = field(default_factory=list)  # коды языков, пусто — без субтитров
     embed_subs: bool = False  # встраивать субтитры в файл (только для видео)
     default_sub: str = ""  # язык субтитра, который включается сам (пусто — никакой)
+    audio_track: str = ""  # код языка звуковой дорожки; "" — оригинал; "*" — все дорожки
+    audio_codes: list = field(default_factory=list)  # коды всех дорожек (для "*")
     thumbnail: bool = False
     container: str = "mp4"  # mp4 или mkv (для видео)
     progress: str = ""  # последняя строка прогресса для очереди
@@ -141,6 +144,15 @@ def quality_choices(heights: list[int]) -> list[int]:
     return [h for h in VIDEO_HEIGHTS if h <= top] or [top]
 
 
+def _audio_languages(formats: list) -> list[tuple[str, str]]:
+    """Языки звуковых дорожек (у видео с дубляжом): [(код, название)]."""
+    found = {}
+    for f in formats:
+        if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none") and f.get("language"):
+            found.setdefault(f["language"], f.get("format_note") or f["language"])
+    return list(found.items())
+
+
 def _subtitle_languages(info: dict) -> list[tuple[str, bool]]:
     """Языки субтитров: сначала авторские, потом автоматические (не больше 30)."""
     manual = sorted((info.get("subtitles") or {}).keys())
@@ -195,6 +207,7 @@ def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
         sizes,
         audio_size,
         sub_langs=_subtitle_languages(info),
+        audio_langs=_audio_languages(formats),
     )
 
 
@@ -257,6 +270,16 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
                 {"key": "EmbedThumbnail"},
             ],
         }
+
+    if job.mode == "video" and job.audio_track == "*" and job.audio_codes:
+        # Все звуковые дорожки (дубляж) попадают в файл отдельными дорожками.
+        tracks = "+".join(f"ba[language={code}]" for code in job.audio_codes)
+        opts |= {"format": f"bv*[height<={job.height}]+{tracks}", "audio_multistreams": True}
+    elif job.mode == "video" and job.audio_track:
+        opts["format"] = (
+            f"bv*[height<={job.height}]+ba[language={job.audio_track}]"
+            f"/bv*[height<={job.height}]+ba"
+        )
 
     if job.subtitles:
         # Субтитры сохраняются отдельными файлами рядом с видео (например, .ru.vtt).
