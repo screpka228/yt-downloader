@@ -14,6 +14,7 @@ echo [3/3] Собираю YTDownloader.exe (это займёт нескольк
 python -m PyInstaller --noconfirm --onefile --windowed --name YTDownloader ^
   --icon icon.ico --add-data "icon.ico;." ^
   --collect-all customtkinter --collect-all imageio_ffmpeg --collect-all yt_dlp ^
+  --hidden-import socks ^
   --copy-metadata yt-dlp main.py
 if errorlevel 1 goto error
 

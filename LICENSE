@@ -1,21 +1,20 @@
-MIT License
+MIT License с условием указания автора
 
 Copyright (c) 2026 screpka228
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Разрешается бесплатно получить копию этого программного обеспечения и связанных с ним файлов документации (далее — «Программа») и без ограничений использовать её: копировать, изменять, объединять, публиковать, распространять, сублицензировать и/или продавать копии Программы, при соблюдении следующих условий.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Уведомление об авторстве обязательно. Любая копия Программы или её части, а также любое производное произведение должны содержать указанное выше уведомление об авторском праве и это условие полностью.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. Упоминание автора обязательно. При любом использовании Программы или её производного произведения (в том числе в составе другого продукта, в статье, видео, на сайте или в описании релиза) необходимо явно указать, что автор оригинала — screpka228, и дать ссылку на оригинальный репозиторий: https://github.com/screpka228/yt-downloader
+
+3. Запрещено выдавать производное произведение за оригинальную программу автора или создавать впечатление, что автор одобряет ваш продукт, без его письменного согласия.
+
+ПРОГРАММА ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ, ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ ГАРАНТИИ ТОВАРНОЙ ПРИГОДНОСТИ, ПРИГОДНОСТИ ДЛЯ КОНКРЕТНОЙ ЦЕЛИ И ОТСУТСТВИЯ НАРУШЕНИЙ ПРАВ. АВТОР НЕ НЕСЁТ ОТВЕТСТВЕННОСТИ ЗА ЛЮБЫЕ ПРЕТЕНЗИИ, УЩЕРБ ИЛИ ИНЫЕ ОБЯЗАТЕЛЬСТВА, ВОЗНИКАЮЩИЕ ИЗ ИСПОЛЬЗОВАНИЯ ПРОГРАММЫ.
+
+Пользователь самостоятельно отвечает за соблюдение авторских прав и правил сервисов (например, YouTube), с которых загружает контент. Программа предназначена для личного использования.
+
+---
+
+English summary (for convenience, the Russian text above is the legal text):
+The MIT License, plus two conditions: (1) copyright notice must be kept in all copies and derivatives; (2) any use of the Software or derivative works must credit the original author, screpka228, with a link to https://github.com/screpka228/yt-downloader. Provided "as is", without warranty.

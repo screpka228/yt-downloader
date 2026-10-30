@@ -48,7 +48,7 @@ class Job:
     url: str
     mode: str  # "video" или "audio"
     out_dir: str
-    proxy: str
+    net: dict  # proxy, timeout, retries — см. settings.net_options
     height: int = 1080
     audio_format: str = "mp3 (320 kbps)"
     status: str = "waiting"  # waiting, running, done, error, cancelled
@@ -56,18 +56,18 @@ class Job:
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
-def _base_opts(proxy: str, ffmpeg_dir: str | None) -> dict:
+def _base_opts(net: dict, ffmpeg_dir: str | None) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
         "ffmpeg_location": ffmpeg_dir,
-        "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
+        "socket_timeout": net["timeout"],
+        "retries": net["retries"],
+        "fragment_retries": net["retries"],
     }
-    if proxy:
-        opts["proxy"] = proxy
+    if net["proxy"]:
+        opts["proxy"] = net["proxy"]
     return opts
 
 
@@ -86,10 +86,12 @@ def translate_error(exc: Exception) -> str:
          "Видео закрытое или требует входа в аккаунт (возрастное ограничение). Такие видео программа пока не скачивает."),
         (("http error 403", "http error 429", "too many requests"),
          "Сервер временно ограничил доступ (403/429). Подождите немного или смените прокси."),
+        (("proxy", "socks"),
+         "Прокси не отвечает или неверно настроен. Проверьте его в разделе «Настройки»."),
         (("unable to download webpage", "getaddrinfo", "name or service not known",
           "network is unreachable", "timed out", "temporary failure", "failed to resolve",
-          "connection", "proxy", "no route to host"),
-         "Нет подключения к интернету, сервер недоступен или прокси не работает."),
+          "connection", "no route to host"),
+         "Нет подключения к интернету или сервер недоступен."),
         (("ffmpeg", "ffprobe"),
          "Не найден ffmpeg, без него нельзя склеить или конвертировать файл. Перезапустите программу."),
     ]
@@ -107,9 +109,9 @@ def quality_choices(heights: list[int]) -> list[int]:
     return [h for h in VIDEO_HEIGHTS if h <= top] or [top]
 
 
-def fetch_info(url: str, proxy: str, ffmpeg_dir: str | None) -> VideoInfo:
+def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
     """Получает название, длительность, превью и доступные качества без скачивания."""
-    opts = _base_opts(proxy, ffmpeg_dir) | {"skip_download": True, "extract_flat": "in_playlist"}
+    opts = _base_opts(net, ffmpeg_dir) | {"skip_download": True, "extract_flat": "in_playlist"}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -177,7 +179,7 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
     # Для плейлиста создаётся подпапка с его названием, для одного видео — нет.
     template = "%(playlist_title&{}/|)s%(playlist_index&{} - |)s%(title)s.%(ext)s"
 
-    opts = _base_opts(job.proxy, ffmpeg_dir) | {
+    opts = _base_opts(job.net, ffmpeg_dir) | {
         "outtmpl": str(out_dir / template),
         "progress_hooks": [_make_hook(job, on_progress)],
         "windowsfilenames": True,
