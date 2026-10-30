@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from pathlib import Path
 from io import BytesIO
 from tkinter import BooleanVar, filedialog, messagebox
 
@@ -291,6 +292,92 @@ class SubtitleDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class FirstRunDialog(ctk.CTkToplevel):
+    """Мастер первого запуска: папка, качество, аудиодорожка и субтитры по умолчанию."""
+
+    AUDIO_CHOICES = {
+        "Оригинал": "",
+        "Все дорожки (если есть)": "*",
+        "Русская (если есть)": "ru",
+        "Английская (если есть)": "en",
+    }
+    SUB_CHOICES = {
+        "Не скачивать": [],
+        "Русские и английские": ["ru", "en"],
+        "Только русские": ["ru"],
+    }
+
+    def __init__(self, master, settings, on_done):
+        super().__init__(master)
+        self.title("Первый запуск")
+        self.geometry("540x700")
+        self.configure(fg_color=CARD)
+        self.transient(master)
+        self.grab_set()
+        self.on_done = on_done
+
+        ctk.CTkLabel(self, text="Настроим под себя", font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", padx=24, pady=(20, 2))
+        ctk.CTkLabel(self, text="Всё это можно будет поменять позже в «Настройках».",
+                     text_color=MUTED).pack(anchor="w", padx=24)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24, pady=10)
+        body.grid_columnconfigure(0, weight=1)
+
+        caption(body, "Папка для загрузок").grid(row=0, column=0, sticky="w", pady=(8, 4))
+        folder_row = ctk.CTkFrame(body, fg_color="transparent")
+        folder_row.grid(row=1, column=0, sticky="ew")
+        folder_row.grid_columnconfigure(0, weight=1)
+        self.folder_var = ctk.StringVar(value=settings["download_dir"])
+        field(folder_row, textvariable=self.folder_var).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        ghost(folder_row, "Выбрать", self._choose_folder, width=110).grid(row=0, column=1)
+
+        caption(body, "Качество видео").grid(row=2, column=0, sticky="w", pady=(14, 4))
+        self.quality_menu = option_menu(body, [f"{h}p" for h in VIDEO_HEIGHTS], 240)
+        self.quality_menu.set(f"{settings['video_quality']}p")
+        self.quality_menu.grid(row=3, column=0, sticky="w")
+
+        caption(body, "Формат файла").grid(row=4, column=0, sticky="w", pady=(14, 4))
+        self.container_menu = option_menu(body, ["mp4", "mkv"], 240)
+        self.container_menu.set(settings["container"] if settings["container"] in ("mp4", "mkv") else "mp4")
+        self.container_menu.grid(row=5, column=0, sticky="w")
+
+        caption(body, "Звуковая дорожка (если на видео несколько)").grid(row=6, column=0, sticky="w", pady=(14, 4))
+        self.audio_menu = option_menu(body, list(self.AUDIO_CHOICES), 300)
+        self.audio_menu.set(self._label_for(self.AUDIO_CHOICES, settings["audio_pref"]))
+        self.audio_menu.grid(row=7, column=0, sticky="w")
+
+        caption(body, "Субтитры").grid(row=8, column=0, sticky="w", pady=(14, 4))
+        current_subs = settings["subs_langs"]
+        sub_label = next((k for k, v in self.SUB_CHOICES.items() if v == current_subs), "Не скачивать")
+        self.sub_menu = option_menu(body, list(self.SUB_CHOICES), 300)
+        self.sub_menu.set(sub_label)
+        self.sub_menu.grid(row=9, column=0, sticky="w")
+
+        primary(self, "Готово", self._finish, height=46).pack(fill="x", padx=24, pady=(10, 22))
+
+    @staticmethod
+    def _label_for(choices: dict, value: str) -> str:
+        return next((label for label, v in choices.items() if v == value), next(iter(choices)))
+
+    def _choose_folder(self):
+        folder = filedialog.askdirectory(initialdir=self.folder_var.get() or None, parent=self)
+        if folder:
+            self.folder_var.set(folder)
+
+    def _finish(self):
+        self.on_done({
+            "download_dir": self.folder_var.get().strip() or str(Path.home() / "Downloads"),
+            "video_quality": int(self.quality_menu.get().rstrip("p")),
+            "container": self.container_menu.get(),
+            "audio_pref": self.AUDIO_CHOICES[self.audio_menu.get()],
+            "subs_langs": self.SUB_CHOICES[self.sub_menu.get()],
+            "first_run_done": True,
+        })
+        self.destroy()
+
+
 # ---------- Главное окно ----------
 
 
@@ -301,8 +388,11 @@ class App(ctk.CTk):
         super().__init__()
         self.settings = load_settings()
         self.title(f"{APP_NAME} {APP_VERSION}")
-        self.geometry("1080x800")
-        self.minsize(980, 720)
+        # Окно помещается на экран целиком, даже на ноутбуке с маленьким разрешением.
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        width, height = min(1200, sw - 60), min(900, sh - 90)
+        self.geometry(f"{width}x{height}+{(sw - width) // 2}+{(sh - height) // 2}")
+        self.minsize(960, 680)
         self.configure(fg_color=BG)
         self._set_icon()
         self._setup_dpi_logging()
@@ -345,6 +435,19 @@ class App(ctk.CTk):
             threading.Thread(target=self._check_app_update, daemon=True).start()
         self.after(100, self._poll_events)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        if not self.settings["first_run_done"]:
+            self.after(400, self._first_run)
+
+    def _first_run(self):
+        FirstRunDialog(self, self.settings, self._apply_first_run)
+
+    def _apply_first_run(self, values: dict):
+        self.settings.update(values)
+        save_settings(self.settings)
+        self.folder_var.set(self.settings["download_dir"])
+        self.sub_selection = list(self.settings["subs_langs"])
+        self.sub_default = self.settings["subs_default"]
+        self._apply_settings()
 
     def _set_icon(self):
         try:
@@ -522,6 +625,11 @@ class App(ctk.CTk):
 
         self.chips_frame = ctk.CTkFrame(preview, fg_color="transparent")
         self.chips_frame.grid(row=1, column=1, sticky="w", padx=(6, 18))
+        # Длительность и примерный размер стоят рядом, в одной строке.
+        self.chip_label = chip(self.chips_frame, "")
+        self.chip_label.pack(side="left", padx=(0, 8))
+        self.size_label = ctk.CTkLabel(self.chips_frame, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
+        self.size_label.pack(side="left")
 
         options = ctk.CTkFrame(preview, fg_color="transparent")
         options.grid(row=2, column=1, sticky="w", padx=(6, 18), pady=(14, 20))
@@ -546,7 +654,6 @@ class App(ctk.CTk):
         self.sub_row.grid_remove()
         self.sub_btn = ghost(self.sub_row, "🗒  Субтитры", self._open_subtitles, width=140)
         self.sub_label = ctk.CTkLabel(self.sub_row, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
-        self.size_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
         folder = card(page)
         folder.grid(row=3, column=0, sticky="ew", pady=14)
@@ -594,7 +701,6 @@ class App(ctk.CTk):
         self.option_label.configure(text="Качество" if is_video else "Формат")
         self.quality_menu.pack_forget()
         self.audio_menu.pack_forget()
-        self.size_label.pack_forget()
         self.container_menu.pack_forget()
         self.track_menu.pack_forget()
         self.sub_btn.pack_forget()
@@ -609,7 +715,6 @@ class App(ctk.CTk):
             self.sub_label.pack(side="left", padx=10)
         else:
             self.sub_row.grid_remove()
-        self.size_label.pack(side="left", padx=14)
         self._update_size()
         self._update_sub_label()
 
@@ -786,13 +891,11 @@ class App(ctk.CTk):
             self.thumb_label.configure(image=None, text="🎬", font=ctk.CTkFont(size=48))
 
         self.title_label.configure(text=info.title)
-        for widget in self.chips_frame.winfo_children():
-            widget.destroy()
         if info.is_playlist:
-            chip(self.chips_frame, "Плейлист").pack(side="left", padx=(0, 8))
-            chip(self.chips_frame, f"видео: {info.count}").pack(side="left")
+            self.chip_label.configure(text=f"  Плейлист • видео: {info.count}  ")
         else:
-            chip(self.chips_frame, f"⏱ {format_duration(info.duration)}").pack(side="left", padx=(0, 8))
+            self.chip_label.configure(text=f"  ⏱ {format_duration(info.duration)}  ")
+        if not info.is_playlist:
             choices = downloader.quality_choices(info.heights)
             self.quality_menu.configure(values=[f"{h}p" for h in choices])
             preferred = int(self.settings["video_quality"])
@@ -804,7 +907,13 @@ class App(ctk.CTk):
                 self.track_map[f"{label} ({code})"] = (code, [])
             self.track_map["Все дорожки"] = ("*", [code for code, _ in info.audio_langs])
         self.track_menu.configure(values=list(self.track_map))
-        self.track_menu.set("Оригинал")
+        chosen = "Оригинал"
+        pref = self.settings.get("audio_pref", "")
+        if pref == "*" and "Все дорожки" in self.track_map:
+            chosen = "Все дорожки"
+        elif pref:
+            chosen = next((label for label, (code, _) in self.track_map.items() if code == pref), "Оригинал")
+        self.track_menu.set(chosen)
         self._show_options()
         self._update_size()
         self._update_sub_label()
