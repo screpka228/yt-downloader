@@ -63,7 +63,7 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"; fi
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | tr -d '\r\n ' | base64 -d >"$RUNNER_TEMP/release.jks"; fi
 
       - name: Build release APK
         working-directory: android
