@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Сборка PyInstaller
+build/
+dist/
+*.spec
+
+# Настройки пользователя (создаются программой)
+settings.json
+
+# Служебное
+.idea/
+.vscode/
+Thumbs.db
