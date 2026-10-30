@@ -29,6 +29,9 @@ android {
         targetSdk = 35
         versionCode = 1 // при каждом выпуске увеличивайте на 1
         versionName = "1.0.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {
@@ -52,6 +55,15 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // youtubedl-android распаковывает libpython.zip.so из папки lib/ на устройстве,
+    // поэтому нативные библиотеки должны лежать там же, а не только внутри APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

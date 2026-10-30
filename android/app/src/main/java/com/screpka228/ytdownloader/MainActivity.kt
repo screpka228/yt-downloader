@@ -41,7 +41,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DownloadScreen() {
     var url by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("Вставьте ссылку на видео") }
+    var status by remember {
+        mutableStateOf(App.initError?.let { "Движок не запустился: $it" } ?: "Вставьте ссылку на видео")
+    }
     var progress by remember { mutableFloatStateOf(0f) }
     var busy by remember { mutableStateOf(false) }
 
