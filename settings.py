@@ -29,6 +29,9 @@ DEFAULTS = {
     # Обновления
     "auto_update_ytdlp": True,
     "check_app_update": True,
+    # Дополнительно при загрузке
+    "subs_enabled": False,
+    "thumb_enabled": False,
 }
 
 

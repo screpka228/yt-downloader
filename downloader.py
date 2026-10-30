@@ -62,6 +62,8 @@ class Job:
     status: str = "waiting"  # waiting, running, done, error, cancelled
     message: str = ""
     network_error: bool = False
+    subtitles: bool = False
+    thumbnail: bool = False
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
@@ -228,6 +230,13 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
                 {"key": "EmbedThumbnail"},
             ],
         }
+
+    if job.subtitles:
+        # Субтитры сохраняются отдельными файлами рядом с видео (.ru.vtt / .en.vtt).
+        opts |= {"writesubtitles": True, "subtitleslangs": ["ru", "en"]}
+    if job.thumbnail and job.mode == "video":
+        # Обложка сохраняется отдельным файлом. Для музыки она и так встраивается в файл.
+        opts["writethumbnail"] = True
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

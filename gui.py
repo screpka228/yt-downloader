@@ -1,4 +1,5 @@
 """Главное окно программы (customtkinter): боковая панель и страницы."""
+import os
 import queue
 import re
 import threading
@@ -17,6 +18,7 @@ import downloader
 from app_config import APP_NAME, APP_VERSION, GITHUB_REPO, data_dir, resource_dir
 from dpi_proxy import METHODS, DpiProxy, configure_file_logging, probe
 from downloader import AUDIO_FORMATS, VIDEO_HEIGHTS, Job, UserError
+from history import add_history, clear_history, load_history
 from settings import load_settings, net_options, save_settings
 
 ctk.set_appearance_mode("dark")
@@ -208,6 +210,7 @@ class App(ctk.CTk):
         self._build_shell()
         self._build_download_page()
         self._build_queue_page()
+        self._build_history_page()
         self._build_settings_page()
         self._build_about_page()
         self._apply_settings()
@@ -293,6 +296,7 @@ class App(ctk.CTk):
         nav = [
             ("download", "⬇   Загрузка"),
             ("queue", "☰   Очередь"),
+            ("history", "🕘   История"),
             ("settings", "⚙   Настройки"),
             ("about", "ⓘ   О программе"),
         ]
@@ -331,6 +335,8 @@ class App(ctk.CTk):
 
     def show_page(self, key):
         self.pages[key].tkraise()
+        if key == "history":
+            self._refresh_history()
         for name, button in self.nav_buttons.items():
             active = name == key
             button.configure(
@@ -485,6 +491,8 @@ class App(ctk.CTk):
             net=self._current_net(),
             height=int(self.quality_menu.get().rstrip("p")),
             audio_format=self.audio_menu.get(),
+            subtitles=bool(self.settings["subs_enabled"]),
+            thumbnail=bool(self.settings["thumb_enabled"]),
         )
         self._remember_download()
         self.jobs.append(job)
@@ -690,6 +698,56 @@ class App(ctk.CTk):
         else:
             self._status(f"Встроенный прокси не запустился: {self.dpi_error}", "error")
 
+    # ---------- Страница «История» ----------
+
+    def _build_history_page(self):
+        page = self._new_page("history")
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(1, weight=1)
+        top = ctk.CTkFrame(page, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew")
+        top.grid_columnconfigure(0, weight=1)
+        heading(top, "История", "Что вы уже скачали").grid(row=0, column=0, sticky="w")
+        ghost(top, "Очистить историю", self._clear_history, width=180).grid(row=0, column=1, sticky="e")
+        self.history_frame = ctk.CTkScrollableFrame(page, fg_color="transparent", corner_radius=0)
+        self.history_frame.grid(row=1, column=0, sticky="nsew", pady=(20, 0))
+
+    def _refresh_history(self):
+        for widget in self.history_frame.winfo_children():
+            widget.destroy()
+        items = load_history()
+        if not items:
+            ctk.CTkLabel(
+                self.history_frame, text="Пока пусто. Скачанные файлы появятся здесь.", text_color=MUTED
+            ).pack(anchor="w", padx=8, pady=20)
+            return
+        for item in items:
+            row = card(self.history_frame)
+            row.pack(fill="x", padx=4, pady=5)
+            row.grid_columnconfigure(0, weight=1)
+            kind = "Видео" if item["kind"] == "video" else "Музыка"
+            ctk.CTkLabel(
+                row, text=item["url"][:90], text_color=TEXT, anchor="w",
+                font=ctk.CTkFont(size=13, weight="bold"),
+            ).grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 0))
+            ctk.CTkLabel(
+                row, text=f"{kind}  •  {item['date']}  •  {item['folder']}", text_color=MUTED,
+                anchor="w", wraplength=680, justify="left", font=ctk.CTkFont(size=12),
+            ).grid(row=1, column=0, sticky="ew", padx=18, pady=(2, 14))
+            ghost(row, "Открыть папку", lambda f=item["folder"]: self._open_folder(f), width=150).grid(
+                row=0, column=1, rowspan=2, padx=18)
+
+    def _open_folder(self, folder: str):
+        if os.path.isdir(folder):
+            os.startfile(folder)
+        else:
+            self._status("Эта папка уже не существует", "error")
+
+    def _clear_history(self):
+        if messagebox.askyesno("Очистить историю?", "Список загрузок будет удалён. Сами файлы останутся на диске."):
+            clear_history()
+            self._refresh_history()
+
     # ---------- Страница «Настройки» ----------
 
     def _build_settings_page(self):
@@ -710,8 +768,18 @@ class App(ctk.CTk):
             row=1, column=0, sticky="ew", padx=(20, 10), pady=(0, 18)
         )
         ghost(folder_card, "Выбрать папку", self._choose_folder, width=160).grid(
-            row=1, column=1, padx=(0, 20), pady=(0, 18)
+            row=1, column=1, padx=(0, 20), pady=(0, 6)
         )
+        self.subs_switch = ctk.CTkSwitch(
+            folder_card, text="Скачивать субтитры (русские и английские)", progress_color=ACCENT,
+            text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
+        )
+        self.subs_switch.grid(row=2, column=0, columnspan=2, sticky="w", padx=20, pady=(8, 6))
+        self.thumb_switch = ctk.CTkSwitch(
+            folder_card, text="Сохранять обложку видео отдельным файлом", progress_color=ACCENT,
+            text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
+        )
+        self.thumb_switch.grid(row=3, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 18))
 
         # Прокси
         proxy = card(scroll)
@@ -855,6 +923,8 @@ class App(ctk.CTk):
         self._set_entry(self.retries_entry, s["retries"])
         self.auto_ytdlp_switch.select() if s["auto_update_ytdlp"] else self.auto_ytdlp_switch.deselect()
         self.check_app_switch.select() if s["check_app_update"] else self.check_app_switch.deselect()
+        self.subs_switch.select() if s["subs_enabled"] else self.subs_switch.deselect()
+        self.thumb_switch.select() if s["thumb_enabled"] else self.thumb_switch.deselect()
         self._refresh_dpi_status()
 
     @staticmethod
@@ -899,6 +969,8 @@ class App(ctk.CTk):
             retries=retries,
             auto_update_ytdlp=bool(self.auto_ytdlp_switch.get()),
             check_app_update=bool(self.check_app_switch.get()),
+            subs_enabled=bool(self.subs_switch.get()),
+            thumb_enabled=bool(self.thumb_switch.get()),
         )
         return form
 
@@ -1018,6 +1090,7 @@ class App(ctk.CTk):
                 )
                 job.status = "done"
                 job.message = job.out_dir
+                add_history(job.url, job.out_dir, job.mode)
             except downloader.Cancelled:
                 job.status = "cancelled"
                 job.message = "отменено пользователем"
