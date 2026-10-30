@@ -1,6 +1,9 @@
 name: Build
 
 # Собирает Windows-exe и Android-APK. При пуше тега v* создаёт GitHub Release с обоими файлами.
+env:
+  PYTHONUTF8: "1"
+
 on:
   push:
     branches: [main]
@@ -47,7 +50,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
