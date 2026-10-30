@@ -19,7 +19,7 @@ import deps
 import downloader
 from app_config import APP_NAME, APP_VERSION, GITHUB_REPO, data_dir, resource_dir
 from dpi_proxy import METHODS, DpiProxy, configure_file_logging, probe
-from downloader import AUDIO_FORMATS, VIDEO_HEIGHTS, Job, UserError
+from downloader import AUDIO_FORMATS, VIDEO_HEIGHTS, Job, UserError, parse_timecode
 from history import add_history, clear_history, load_history
 from settings import load_settings, net_options, save_settings
 
@@ -652,6 +652,19 @@ class App(ctk.CTk):
         self.sub_row = ctk.CTkFrame(preview, fg_color="transparent")
         self.sub_row.grid(row=3, column=1, sticky="w", padx=(6, 18), pady=(0, 18))
         self.sub_row.grid_remove()
+
+        # Фрагмент по времени: «с» и «до». Пусто — всё видео.
+        self.clip_row = ctk.CTkFrame(preview, fg_color="transparent")
+        self.clip_row.grid(row=4, column=1, sticky="w", padx=(6, 18), pady=(0, 18))
+        self.clip_row.grid_remove()
+        ctk.CTkLabel(self.clip_row, text="Фрагмент с", text_color=MUTED).pack(side="left")
+        self.clip_start = field(self.clip_row, width=100, placeholder_text="0:00")
+        self.clip_start.pack(side="left", padx=(8, 12))
+        ctk.CTkLabel(self.clip_row, text="до", text_color=MUTED).pack(side="left")
+        self.clip_end = field(self.clip_row, width=100, placeholder_text="конец")
+        self.clip_end.pack(side="left", padx=(8, 12))
+        ctk.CTkLabel(self.clip_row, text="пример: 1:30 или 1:02:30; пусто — всё видео",
+                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(side="left")
         self.sub_btn = ghost(self.sub_row, "🗒  Субтитры", self._open_subtitles, width=140)
         self.sub_label = ctk.CTkLabel(self.sub_row, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
@@ -800,6 +813,18 @@ class App(ctk.CTk):
             return False
         return True
 
+    def _clip_range(self):
+        """Фрагмент из полей «с» и «до» в секундах. None — всё видео. ValueError — неверное время."""
+        start_text = self.clip_start.get().strip()
+        end_text = self.clip_end.get().strip()
+        if not start_text and not end_text:
+            return None
+        start = parse_timecode(start_text) if start_text else 0
+        end = parse_timecode(end_text) if end_text else float("inf")
+        if start is None or end is None or start >= end:
+            raise ValueError("Проверьте время: пишите 1:30 или 1:02:30, начало должно быть меньше конца")
+        return (start, end)
+
     def _add_to_queue(self):
         url = self._url()
         if not self._valid_url(url) or not self._builtin_ready():
@@ -807,6 +832,11 @@ class App(ctk.CTk):
         out_dir = self.folder_var.get().strip()
         if not out_dir:
             self._status("Укажите папку для сохранения", "error")
+            return
+        try:
+            clip = self._clip_range()
+        except ValueError as exc:
+            self._status(str(exc), "error")
             return
         job = Job(
             url=url,
@@ -819,6 +849,7 @@ class App(ctk.CTk):
             subtitles=list(self.sub_selection) if self.mode_switch.get() == MODE_VIDEO else [],
             embed_subs=self.sub_embed,
             default_sub=self.sub_default if self.mode_switch.get() == MODE_VIDEO else "",
+            clip=clip,
             audio_track=self.track_map.get(self.track_menu.get(), ("", []))[0],
             audio_codes=self.track_map.get(self.track_menu.get(), ("", []))[1],
             thumbnail=bool(self.settings["thumb_enabled"]),
@@ -853,6 +884,11 @@ class App(ctk.CTk):
         if not out_dir or not self._builtin_ready():
             return
         is_video = self.mode_switch.get() == MODE_VIDEO
+        try:
+            clip = self._clip_range()
+        except ValueError as exc:
+            self._status(str(exc), "error")
+            return
         for url in urls:
             job = Job(
                 url=url,
@@ -865,6 +901,7 @@ class App(ctk.CTk):
                 subtitles=list(self.sub_selection) if is_video else [],
                 embed_subs=self.sub_embed,
                 default_sub=self.sub_default if is_video else "",
+                clip=clip,
                 audio_track=self.track_map.get(self.track_menu.get(), ("", []))[0],
                 audio_codes=self.track_map.get(self.track_menu.get(), ("", []))[1],
                 thumbnail=bool(self.settings["thumb_enabled"]),
@@ -912,13 +949,22 @@ class App(ctk.CTk):
         if pref == "*" and "Все дорожки" in self.track_map:
             chosen = "Все дорожки"
         elif pref:
-            chosen = next((label for label, (code, _) in self.track_map.items() if code == pref), "Оригинал")
+            # Сравниваем по основному коду языка: «ru-RU» и «ru» — один и тот же язык.
+            chosen = next(
+                (label for label, (code, _) in self.track_map.items()
+                 if code and code.split("-")[0].lower() == pref.split("-")[0].lower()),
+                None,
+            )
+            if chosen is None:
+                chosen = "Оригинал"
+                self._status(f"В этом видео нет дорожки «{pref}», выбран оригинал", "error")
         self.track_menu.set(chosen)
         self._show_options()
         self._update_size()
         self._update_sub_label()
         if self.mode_switch.get() == MODE_VIDEO:
             self.sub_row.grid()
+        self.clip_row.grid()
         self._status("Информация получена. Выберите качество и добавьте в очередь.", "ok")
 
     def _remember_download(self):

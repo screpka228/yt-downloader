@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yt_dlp
 from yt_dlp.postprocessor.common import PostProcessor
-from yt_dlp.utils import YoutubeDLError
+from yt_dlp.utils import YoutubeDLError, download_range_func
 
 VIDEO_HEIGHTS = [2160, 1440, 1080, 720, 480, 360]
 # Название для меню -> (кодек для ffmpeg, битрейт или None)
@@ -71,10 +71,22 @@ class Job:
     default_sub: str = ""  # язык субтитра, который включается сам (пусто — никакой)
     audio_track: str = ""  # код языка звуковой дорожки; "" — оригинал; "*" — все дорожки
     audio_codes: list = field(default_factory=list)  # коды всех дорожек (для "*")
+    clip: tuple | None = None  # фрагмент (начало, конец) в секундах; None — всё видео
     thumbnail: bool = False
     container: str = "mp4"  # mp4 или mkv (для видео)
     progress: str = ""  # последняя строка прогресса для очереди
     cancel: threading.Event = field(default_factory=threading.Event)
+
+
+def parse_timecode(text: str) -> float | None:
+    """'90' -> 90, '1:30' -> 90, '1:02:30' -> 3750. None, если формат неверный."""
+    parts = text.strip().split(":")
+    if not 1 <= len(parts) <= 3 or not all(part.isdigit() for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
 
 
 def _base_opts(net: dict, ffmpeg_dir: str | None) -> dict:
@@ -273,11 +285,11 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
 
     if job.mode == "video" and job.audio_track == "*" and job.audio_codes:
         # Все звуковые дорожки (дубляж) попадают в файл отдельными дорожками.
-        tracks = "+".join(f"ba[language={code}]" for code in job.audio_codes)
+        tracks = "+".join(f"ba[language^={code}]" for code in job.audio_codes)
         opts |= {"format": f"bv*[height<={job.height}]+{tracks}", "audio_multistreams": True}
     elif job.mode == "video" and job.audio_track:
         opts["format"] = (
-            f"bv*[height<={job.height}]+ba[language={job.audio_track}]"
+            f"bv*[height<={job.height}]+ba[language^={job.audio_track}]"
             f"/bv*[height<={job.height}]+ba"
         )
 
@@ -302,6 +314,12 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
     if job.thumbnail and job.mode == "video":
         # Обложка сохраняется отдельным файлом. Для музыки она и так встраивается в файл.
         opts["writethumbnail"] = True
+
+    if job.clip:
+        # Скачиваем только выбранный фрагмент; конец inf — до конца видео.
+        start, end = job.clip
+        opts["download_ranges"] = download_range_func(None, [(start, end)])
+        opts["force_keyframes_at_cuts"] = True
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
