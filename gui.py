@@ -2,7 +2,6 @@
 import queue
 import re
 import threading
-import time
 import urllib.request
 import webbrowser
 from io import BytesIO
@@ -15,7 +14,8 @@ from PIL import Image
 
 import deps
 import downloader
-from app_config import APP_NAME, APP_VERSION, GITHUB_REPO, resource_dir
+from app_config import APP_NAME, APP_VERSION, GITHUB_REPO, data_dir, resource_dir
+from dpi_proxy import METHODS, DpiProxy, configure_file_logging, probe
 from downloader import AUDIO_FORMATS, VIDEO_HEIGHTS, Job, UserError
 from settings import load_settings, net_options, save_settings
 
@@ -39,18 +39,35 @@ BUSY = "#60a5fa"
 DANGER = "#7f1d1d"
 DANGER_HI = "#991b1b"
 RADIUS = 16
-TEST_URL = "https://www.youtube.com/generate_204"
+TEST_URLS = ["https://www.youtube.com/generate_204", "https://redirector.googlevideo.com/generate_204"]
+PROXY_LABELS = {
+    "builtin": "Встроенный (обход DPI)",
+    "HTTP": "HTTP",
+    "SOCKS5": "SOCKS5",
+    "off": "Без прокси",
+}
+LABEL_TO_PROXY = {label: key for key, label in PROXY_LABELS.items()}
+METHOD_LABELS = {
+    "tlsrec+split": "tlsrec + split (рекомендуется)",
+    "split": "split",
+    "tlsrec": "tlsrec",
+    "none": "без обхода (для проверки)",
+}
+LABEL_TO_METHOD = {label: key for key, label in METHOD_LABELS.items()}
 PROXY_HELP = (
-    "Прокси — это посредник: ваши запросы идут через его сервер. "
-    "Помогает, если YouTube недоступен или сильно ограничивает скорость.\n\n"
-    "Где взять прокси:\n"
+    "Встроенный режим (по умолчанию) не требует внешних серверов и VPN. Программа сама запускает "
+    "прокси на вашем компьютере и при подключении к YouTube разрезает служебный пакет так, "
+    "что провайдерский DPI не видит название сайта. Видео идёт напрямую с серверов Google. "
+    "Сначала попробуйте этот режим и нажмите «Автоподбор».\n\n"
+    "Внешний прокси нужен, только если встроенный не помогает.\n"
+    "Где взять внешний прокси:\n"
     "1. Платные прокси-сервисы. Ищите по запросам «residential proxy» или «datacenter proxy». "
-    "Обычно вы покупаете пакет и получаете адрес, порт, логин и пароль. Их и вводите в поля.\n"
+    "Обычно вы покупаете пакет и получаете адрес, порт, логин и пароль.\n"
     "2. Свой сервер (VPS) с SOCKS5 или HTTP-прокси, если умеете его настроить.\n"
     "3. Бесплатные общедоступные прокси не рекомендуем: они часто медленные и нестабильные, "
     "а через них могут видеть ваши данные.\n\n"
-    "Как заполнить: в поле «Адрес» — только IP или домен (например 1.2.3.4). "
-    "В «Порт» — число (например 8080). Логин и пароль — только если провайдер их выдал."
+    "В поле «Адрес» — только IP или домен (например 1.2.3.4). В «Порт» — число (например 8080). "
+    "Логин и пароль — только если провайдер их выдал."
 )
 
 MODE_VIDEO = "Видео"
@@ -167,6 +184,7 @@ class App(ctk.CTk):
         self.minsize(980, 720)
         self.configure(fg_color=BG)
         self._set_icon()
+        self._setup_dpi_logging()
 
         self.events = queue.Queue()  # сообщения от фоновых потоков к окну
         self.jobs_queue = queue.Queue()  # задачи для рабочего потока
@@ -178,6 +196,14 @@ class App(ctk.CTk):
         self.pages = {}
         self.folder_var = ctk.StringVar(value=self.settings["download_dir"])
         self.ffmpeg_dir = deps.ensure_ffmpeg()
+        self.dpi = DpiProxy(
+            port=int(self.settings["dpi_port"]),
+            method=self.settings["dpi_method"],
+            all_hosts=bool(self.settings["dpi_all_hosts"]),
+        )
+        self.dpi_error = ""
+        if self.settings["proxy_mode"] == "builtin":
+            self._start_dpi()
 
         self._build_shell()
         self._build_download_page()
@@ -199,6 +225,49 @@ class App(ctk.CTk):
         except Exception:
             # Иконки нет (например, при запуске из исходников) — ничего страшного.
             pass
+
+    def _setup_dpi_logging(self):
+        try:
+            configure_file_logging(data_dir() / "logs" / "dpi_proxy.log")
+        except OSError:
+            # Лог не критичен: без него прокси работает так же.
+            pass
+
+    # ---------- Встроенный прокси ----------
+
+    def _start_dpi(self) -> None:
+        try:
+            self.dpi.start()
+            self.dpi_error = ""
+        except OSError as exc:
+            self.dpi_error = str(exc)
+
+    def _dpi_port(self) -> int | None:
+        return self.dpi.port if self.dpi.running else None
+
+    def _current_net(self) -> dict:
+        return net_options(self.settings, self._dpi_port())
+
+    def _apply_dpi(self, cfg: dict) -> None:
+        """Приводит встроенный прокси в соответствие с настройками cfg (запуск, остановка, метод)."""
+        self.dpi.method = cfg["dpi_method"]
+        self.dpi.all_hosts = bool(cfg["dpi_all_hosts"])
+        if cfg["proxy_mode"] != "builtin":
+            self.dpi.stop()
+            self.dpi_error = ""
+        elif not self.dpi.running or self.dpi.preferred_port != int(cfg["dpi_port"]):
+            self.dpi.stop()
+            self.dpi.preferred_port = int(cfg["dpi_port"])
+            self._start_dpi()
+        self._refresh_dpi_status()
+
+    def _refresh_dpi_status(self) -> None:
+        if self.dpi.running:
+            self.dpi_status.configure(text=f"●  Работает на 127.0.0.1:{self.dpi.port}", text_color=OK)
+        elif self.dpi_error:
+            self.dpi_status.configure(text=f"●  Не запущен: {self.dpi_error}", text_color=ERR)
+        else:
+            self.dpi_status.configure(text="●  Не запущен", text_color=MUTED)
 
     # ---------- Каркас: боковая панель и область страниц ----------
 
@@ -384,14 +453,24 @@ class App(ctk.CTk):
         url = self._url()
         if not self._valid_url(url):
             return
+        if not self._builtin_ready():
+            return
         self._status("Получаю информацию о ссылке…")
         threading.Thread(
-            target=self._fetch_preview, args=(url, net_options(self.settings)), daemon=True
+            target=self._fetch_preview, args=(url, self._current_net()), daemon=True
         ).start()
+
+    def _builtin_ready(self) -> bool:
+        """Если выбран встроенный прокси, он должен быть запущен. Иначе сообщаем об ошибке."""
+        if self.settings["proxy_mode"] == "builtin" and not self.dpi.running:
+            self._status(f"Встроенный прокси не запущен: {self.dpi_error or 'причина неизвестна'}. "
+                         "Откройте «Настройки» и проверьте порт.", "error")
+            return False
+        return True
 
     def _add_to_queue(self):
         url = self._url()
-        if not self._valid_url(url):
+        if not self._valid_url(url) or not self._builtin_ready():
             return
         out_dir = self.folder_var.get().strip()
         if not out_dir:
@@ -401,7 +480,7 @@ class App(ctk.CTk):
             url=url,
             mode="video" if self.mode_switch.get() == MODE_VIDEO else "audio",
             out_dir=out_dir,
-            net=net_options(self.settings),
+            net=self._current_net(),
             height=int(self.quality_menu.get().rstrip("p")),
             audio_format=self.audio_menu.get(),
         )
@@ -513,7 +592,7 @@ class App(ctk.CTk):
                 text_color=MUTED,
             ).pack(anchor="w", padx=8, pady=20)
             return
-        for number, job in enumerate(reversed(self.jobs), start=1):
+        for job in reversed(self.jobs):
             row = card(self.queue_frame)
             row.pack(fill="x", padx=4, pady=5)
             row.grid_columnconfigure(1, weight=1)
@@ -584,16 +663,16 @@ class App(ctk.CTk):
         heading(scroll, "Настройки", "Прокси, сеть и обновления").grid(row=0, column=0, sticky="w")
 
         # Папка
-        self.folder_card = card(scroll)
-        self.folder_card.grid(row=1, column=0, sticky="ew", pady=(20, 14))
-        self.folder_card.grid_columnconfigure(0, weight=1)
-        caption(self.folder_card, "Папка для загрузок").grid(
+        folder_card = card(scroll)
+        folder_card.grid(row=1, column=0, sticky="ew", pady=(20, 14))
+        folder_card.grid_columnconfigure(0, weight=1)
+        caption(folder_card, "Папка для загрузок").grid(
             row=0, column=0, sticky="w", padx=20, pady=(18, 6)
         )
-        field(self.folder_card, textvariable=self.folder_var).grid(
+        field(folder_card, textvariable=self.folder_var).grid(
             row=1, column=0, sticky="ew", padx=(20, 10), pady=(0, 18)
         )
-        ghost(self.folder_card, "Выбрать папку", self._choose_folder, width=160).grid(
+        ghost(folder_card, "Выбрать папку", self._choose_folder, width=160).grid(
             row=1, column=1, padx=(0, 20), pady=(0, 18)
         )
 
@@ -601,46 +680,70 @@ class App(ctk.CTk):
         proxy = card(scroll)
         proxy.grid(row=2, column=0, sticky="ew", pady=14)
         proxy.grid_columnconfigure((0, 1), weight=1)
-        head = ctk.CTkFrame(proxy, fg_color="transparent")
-        head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 6))
-        caption(head, "Прокси").pack(side="left")
-        self.proxy_switch = ctk.CTkSwitch(
-            head, text="Использовать прокси", progress_color=ACCENT, text_color=TEXT,
-            button_color=TEXT, button_hover_color=MUTED,
+        caption(proxy, "Прокси").grid(row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(18, 6))
+        self.mode_seg = segmented(proxy, list(PROXY_LABELS.values()), self._on_proxy_mode, width=560)
+        self.mode_seg.grid(row=1, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 12))
+
+        # Блок встроенного прокси
+        self.builtin_frame = ctk.CTkFrame(proxy, fg_color="transparent")
+        self.builtin_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20)
+        self.builtin_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        self.dpi_status = ctk.CTkLabel(self.builtin_frame, text="", anchor="w", font=ctk.CTkFont(size=13, weight="bold"))
+        self.dpi_status.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        ctk.CTkLabel(self.builtin_frame, text="Порт (1024–65535)", text_color=MUTED, anchor="w").grid(
+            row=1, column=0, sticky="ew", padx=(0, 10))
+        ctk.CTkLabel(self.builtin_frame, text="Метод обхода", text_color=MUTED, anchor="w").grid(
+            row=1, column=1, sticky="ew", padx=(0, 10))
+        self.dpi_port_entry = field(self.builtin_frame)
+        self.dpi_port_entry.grid(row=2, column=0, sticky="ew", padx=(0, 10), pady=(4, 10))
+        self.dpi_method_menu = option_menu(self.builtin_frame, list(METHOD_LABELS.values()), 260)
+        self.dpi_method_menu.grid(row=2, column=1, sticky="ew", padx=(0, 10), pady=(4, 10))
+        self.dpi_all_switch = ctk.CTkSwitch(
+            self.builtin_frame, text="Применять ко всем сайтам", progress_color=ACCENT,
+            text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
         )
-        self.proxy_switch.pack(side="right")
-        self.proxy_type = segmented(proxy, ["HTTP", "SOCKS5"], width=200)
-        self.proxy_type.grid(row=1, column=0, columnspan=2, sticky="w", padx=20, pady=(6, 14))
+        self.dpi_all_switch.grid(row=2, column=2, sticky="w", pady=(4, 10))
+        ctk.CTkLabel(
+            self.builtin_frame,
+            text="Обход действует только для YouTube и связанных доменов, остальные сайты идут напрямую.",
+            text_color=MUTED, anchor="w", wraplength=700, justify="left", font=ctk.CTkFont(size=12),
+        ).grid(row=3, column=0, columnspan=3, sticky="ew")
 
-        ctk.CTkLabel(proxy, text="Адрес (IP или домен)", text_color=MUTED, anchor="w").grid(
-            row=2, column=0, sticky="ew", padx=(20, 10))
-        ctk.CTkLabel(proxy, text="Порт", text_color=MUTED, anchor="w").grid(
-            row=2, column=1, sticky="ew", padx=(10, 20))
-        self.host_entry = field(proxy, placeholder_text="например 1.2.3.4")
-        self.host_entry.grid(row=3, column=0, sticky="ew", padx=(20, 10), pady=(4, 12))
-        self.port_entry = field(proxy, placeholder_text="например 8080")
-        self.port_entry.grid(row=3, column=1, sticky="ew", padx=(10, 20), pady=(4, 12))
+        # Блок внешнего прокси
+        self.external_frame = ctk.CTkFrame(proxy, fg_color="transparent")
+        self.external_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20)
+        self.external_frame.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkLabel(self.external_frame, text="Адрес (IP или домен)", text_color=MUTED, anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=(0, 10))
+        ctk.CTkLabel(self.external_frame, text="Порт", text_color=MUTED, anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=(10, 0))
+        self.host_entry = field(self.external_frame, placeholder_text="например 1.2.3.4")
+        self.host_entry.grid(row=1, column=0, sticky="ew", padx=(0, 10), pady=(4, 12))
+        self.port_entry = field(self.external_frame, placeholder_text="например 8080")
+        self.port_entry.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(4, 12))
+        ctk.CTkLabel(self.external_frame, text="Логин (если есть)", text_color=MUTED, anchor="w").grid(
+            row=2, column=0, sticky="ew", padx=(0, 10))
+        ctk.CTkLabel(self.external_frame, text="Пароль (если есть)", text_color=MUTED, anchor="w").grid(
+            row=2, column=1, sticky="ew", padx=(10, 0))
+        self.user_entry = field(self.external_frame)
+        self.user_entry.grid(row=3, column=0, sticky="ew", padx=(0, 10), pady=(4, 12))
+        self.pass_entry = field(self.external_frame, show="•")
+        self.pass_entry.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=(4, 12))
 
-        ctk.CTkLabel(proxy, text="Логин (если есть)", text_color=MUTED, anchor="w").grid(
-            row=4, column=0, sticky="ew", padx=(20, 10))
-        ctk.CTkLabel(proxy, text="Пароль (если есть)", text_color=MUTED, anchor="w").grid(
-            row=4, column=1, sticky="ew", padx=(10, 20))
-        self.user_entry = field(proxy)
-        self.user_entry.grid(row=5, column=0, sticky="ew", padx=(20, 10), pady=(4, 12))
-        self.pass_entry = field(proxy, show="•")
-        self.pass_entry.grid(row=5, column=1, sticky="ew", padx=(10, 20), pady=(4, 12))
-
+        # Общие кнопки и результат
         actions = ctk.CTkFrame(proxy, fg_color="transparent")
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 6))
-        ghost(actions, "Проверить прокси", self._test_proxy_clicked, width=180).pack(side="left")
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 0))
+        ghost(actions, "Проверить", self._test_clicked, width=150).pack(side="left")
+        self.autopick_btn = ghost(actions, "Автоподбор метода", self._autopick_clicked, width=190)
+        self.autopick_btn.pack(side="left", padx=10)
         self.help_btn = ghost(actions, "Где взять прокси? ▾", self._toggle_proxy_help, width=180)
-        self.help_btn.pack(side="left", padx=10)
+        self.help_btn.pack(side="left")
         self.proxy_result = ctk.CTkLabel(proxy, text="", text_color=MUTED, anchor="w",
-                                         wraplength=640, justify="left")
-        self.proxy_result.grid(row=7, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 0))
+                                         wraplength=720, justify="left")
+        self.proxy_result.grid(row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(8, 0))
 
         self.help_box = ctk.CTkFrame(proxy, fg_color=FIELD, corner_radius=12)
-        self.help_box.grid(row=8, column=0, columnspan=2, sticky="ew", padx=20, pady=(10, 18))
+        self.help_box.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(10, 18))
         self.help_box.grid_remove()  # скрыто, пока не нажали кнопку
         ctk.CTkLabel(
             self.help_box, text=PROXY_HELP, text_color=TEXT, justify="left", anchor="w",
@@ -679,6 +782,19 @@ class App(ctk.CTk):
         primary(scroll, "💾  Сохранить настройки", self._save_settings_clicked, height=46).grid(
             row=5, column=0, sticky="ew", pady=(10, 20))
 
+    def _on_proxy_mode(self, _label):
+        self._show_proxy_frames()
+
+    def _show_proxy_frames(self):
+        mode = LABEL_TO_PROXY[self.mode_seg.get()]
+        self.builtin_frame.grid_remove()
+        self.external_frame.grid_remove()
+        if mode == "builtin":
+            self.builtin_frame.grid()
+        elif mode in ("HTTP", "SOCKS5"):
+            self.external_frame.grid()
+        self.autopick_btn.configure(state="normal" if mode == "builtin" else "disabled")
+
     def _toggle_proxy_help(self):
         if self.help_box.winfo_ismapped():
             self.help_box.grid_remove()
@@ -689,8 +805,11 @@ class App(ctk.CTk):
 
     def _load_settings_form(self):
         s = self.settings
-        self.proxy_switch.select() if s["proxy_enabled"] else self.proxy_switch.deselect()
-        self.proxy_type.set(s["proxy_type"] if s["proxy_type"] in ("HTTP", "SOCKS5") else "HTTP")
+        self.mode_seg.set(PROXY_LABELS.get(s["proxy_mode"], PROXY_LABELS["builtin"]))
+        self._show_proxy_frames()
+        self._set_entry(self.dpi_port_entry, s["dpi_port"])
+        self.dpi_method_menu.set(METHOD_LABELS.get(s["dpi_method"], METHOD_LABELS["tlsrec+split"]))
+        self.dpi_all_switch.select() if s["dpi_all_hosts"] else self.dpi_all_switch.deselect()
         self._set_entry(self.host_entry, s["proxy_host"])
         self._set_entry(self.port_entry, s["proxy_port"])
         self._set_entry(self.user_entry, s["proxy_user"])
@@ -699,66 +818,87 @@ class App(ctk.CTk):
         self._set_entry(self.retries_entry, s["retries"])
         self.auto_ytdlp_switch.select() if s["auto_update_ytdlp"] else self.auto_ytdlp_switch.deselect()
         self.check_app_switch.select() if s["check_app_update"] else self.check_app_switch.deselect()
+        self._refresh_dpi_status()
 
     @staticmethod
     def _set_entry(entry, value):
         entry.delete(0, "end")
         entry.insert(0, str(value))
 
-    def _proxy_form(self) -> dict:
-        return {
-            "proxy_enabled": bool(self.proxy_switch.get()),
-            "proxy_type": self.proxy_type.get(),
+    def _form(self) -> dict | None:
+        """Читает и проверяет поля настроек. Возвращает значения или None при ошибке."""
+        mode = LABEL_TO_PROXY[self.mode_seg.get()]
+        form = {
+            "proxy_mode": mode,
             "proxy_host": self.host_entry.get().strip(),
             "proxy_port": self.port_entry.get().strip(),
             "proxy_user": self.user_entry.get().strip(),
             "proxy_pass": self.pass_entry.get(),
+            "dpi_method": LABEL_TO_METHOD[self.dpi_method_menu.get()],
+            "dpi_all_hosts": bool(self.dpi_all_switch.get()),
         }
-
-    def _check_form(self) -> dict | None:
-        """Проверяет поля настроек. Возвращает значения или None, если есть ошибка."""
-        form = self._proxy_form()
         try:
+            form["dpi_port"] = int(self.dpi_port_entry.get())
             timeout = int(self.timeout_entry.get())
             retries = int(self.retries_entry.get())
         except ValueError:
-            self._status("Таймаут и повторы должны быть числами", "error")
+            self._status("Порт, таймаут и повторы должны быть числами", "error")
+            return None
+        if not (1024 <= form["dpi_port"] <= 65535):
+            self._status("Порт встроенного прокси: от 1024 до 65535", "error")
             return None
         if not (5 <= timeout <= 300) or not (0 <= retries <= 20):
             self._status("Таймаут: от 5 до 300 секунд. Повторы: от 0 до 20", "error")
             return None
-        if form["proxy_enabled"] and not form["proxy_host"]:
-            self._status("Включён прокси, но адрес не указан", "error")
-            return None
-        if form["proxy_port"] and not form["proxy_port"].isdigit():
-            self._status("Порт прокси — это число, например 8080", "error")
-            return None
-        form.update(timeout=timeout, retries=retries)
+        if mode in ("HTTP", "SOCKS5"):
+            if not form["proxy_host"]:
+                self._status("Укажите адрес внешнего прокси", "error")
+                return None
+            if form["proxy_port"] and not form["proxy_port"].isdigit():
+                self._status("Порт прокси — это число, например 8080", "error")
+                return None
         form.update(
+            timeout=timeout,
+            retries=retries,
             auto_update_ytdlp=bool(self.auto_ytdlp_switch.get()),
             check_app_update=bool(self.check_app_switch.get()),
         )
         return form
 
     def _save_settings_clicked(self):
-        form = self._check_form()
+        form = self._form()
         if form is None:
             return
         self.settings.update(form)
         self.settings["download_dir"] = self.folder_var.get().strip() or self.settings["download_dir"]
         save_settings(self.settings)
-        self._status("Настройки сохранены. Прокси и сеть применятся к следующей загрузке.", "ok")
+        self._apply_dpi(self.settings)
+        self._status("Настройки сохранены.", "ok")
 
-    def _test_proxy_clicked(self):
-        form = self._check_form()
+    def _test_clicked(self):
+        form = self._form()
         if form is None:
             return
-        if not form["proxy_enabled"]:
-            self.proxy_result.configure(text="Сначала включите прокси переключателем выше.", text_color=ERR)
+        if form["proxy_mode"] == "builtin":
+            self._apply_dpi(form)
+            if not self.dpi.running:
+                self.proxy_result.configure(text=f"Прокси не запущен: {self.dpi_error}", text_color=ERR)
+                return
+        net = net_options({**self.settings, **form}, self._dpi_port())
+        self.proxy_result.configure(text="Проверяю соединение…", text_color=MUTED)
+        threading.Thread(target=self._probe_worker, args=(net["proxy"], net["timeout"]), daemon=True).start()
+
+    def _autopick_clicked(self):
+        form = self._form()
+        if form is None:
             return
-        self.proxy_result.configure(text="Проверяю соединение через прокси…", text_color=MUTED)
-        net = net_options({**self.settings, **form})
-        threading.Thread(target=self._proxy_test_worker, args=(net,), daemon=True).start()
+        self._apply_dpi(form)
+        if not self.dpi.running:
+            self.proxy_result.configure(text=f"Прокси не запущен: {self.dpi_error}", text_color=ERR)
+            return
+        self.proxy_result.configure(text="Подбираю метод: проверяю каждый по очереди…", text_color=MUTED)
+        self.autopick_btn.configure(state="disabled")
+        threading.Thread(target=self._autopick_worker, daemon=True).start()
 
     # ---------- Страница «О программе» ----------
 
@@ -799,6 +939,7 @@ class App(ctk.CTk):
         if self.active_job is not None:
             self.active_job.cancel.set()
         self._remember_download()
+        self.dpi.stop()
         self.destroy()
 
     # ---------- Фоновые потоки ----------
@@ -851,28 +992,28 @@ class App(ctk.CTk):
                 job.message = f"Непредвиденная ошибка: {exc}"
             self.events.put(("finished", job))
 
-    def _proxy_test_worker(self, net: dict):
-        proxies = {"http": net["proxy"], "https": net["proxy"]} if net["proxy"] else None
-        started = time.monotonic()
-        try:
-            response = requests.get(TEST_URL, proxies=proxies, timeout=net["timeout"])
-        except requests.exceptions.ProxyError:
-            text = "Не удалось подключиться к прокси. Проверьте адрес, порт, логин и пароль."
-            self.events.put(("proxy_test", False, text))
-            return
-        except requests.exceptions.Timeout:
-            text = f"Прокси не ответил за {net['timeout']} сек. Попробуйте другой или увеличьте таймаут."
-            self.events.put(("proxy_test", False, text))
-            return
-        except requests.RequestException as exc:
-            self.events.put(("proxy_test", False, f"Ошибка соединения: {exc}"))
-            return
-        ms = int((time.monotonic() - started) * 1000)
-        if response.status_code < 400:
-            text = f"Прокси работает. Ответ за {ms} мс, YouTube доступен."
-            self.events.put(("proxy_test", True, text))
-        else:
-            self.events.put(("proxy_test", False, f"YouTube ответил ошибкой {response.status_code}."))
+    @staticmethod
+    def _summarize(results) -> tuple[bool, str]:
+        parts, ok_all = [], True
+        for url, ok, ms, note in results:
+            name = "YouTube" if "youtube" in url else "googlevideo"
+            ok_all = ok_all and ok
+            parts.append(f"{name}: {'✓ ' + str(ms) + ' мс' if ok else '✗ ' + note}")
+        return ok_all, "   •   ".join(parts)
+
+    def _probe_worker(self, proxy: str, timeout: int):
+        ok, text = self._summarize(probe(proxy, TEST_URLS, timeout=timeout))
+        self.events.put(("proxy_test", ok, text))
+
+    def _autopick_worker(self):
+        for method in ("tlsrec+split", "tlsrec", "split"):
+            self.dpi.method = method
+            ok, text = self._summarize(probe(f"http://127.0.0.1:{self.dpi.port}", TEST_URLS, timeout=10))
+            if ok:
+                self.events.put(("autopick", method, True, f"Подобран метод «{METHOD_LABELS[method]}». {text}"))
+                return
+        self.events.put(("autopick", None, False,
+                         "Ни один метод не сработал. Возможно, проблема не в DPI (нет сети или блокировка по IP)."))
 
     def _check_app_update(self):
         try:
@@ -931,6 +1072,16 @@ class App(ctk.CTk):
             self._finish_job(event[1])
         elif kind == "proxy_test":
             self.proxy_result.configure(text=event[2], text_color=OK if event[1] else ERR)
+        elif kind == "autopick":
+            _, method, ok, text = event
+            if method:
+                self.settings["dpi_method"] = method
+                save_settings(self.settings)
+                self.dpi_method_menu.set(METHOD_LABELS[method])
+            elif self.dpi.running:
+                self.dpi.method = self.settings["dpi_method"]
+            self.proxy_result.configure(text=text, text_color=OK if ok else ERR)
+            self.autopick_btn.configure(state="normal")
         elif kind == "app_update":
             self._offer_app_update(event[1], event[2])
         elif kind == "manual_done":

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dpi-proxy"
+version = "0.1.0"
+description = "Локальный прокси (SOCKS5 и HTTP CONNECT) с обходом DPI через фрагментацию TLS ClientHello"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "screpka228" }]
+dependencies = []
+
+[project.optional-dependencies]
+probe = ["requests>=2.31", "PySocks>=1.7"]
+test = ["requests>=2.31", "PySocks>=1.7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

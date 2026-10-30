@@ -13,13 +13,16 @@ DEFAULTS = {
     "mode": "Видео",
     "video_quality": 1080,
     "audio_format": "mp3 (320 kbps)",
-    # Прокси
-    "proxy_enabled": False,
-    "proxy_type": "HTTP",  # HTTP или SOCKS5
+    # Прокси: builtin (встроенный обход DPI), HTTP, SOCKS5 или off (без прокси)
+    "proxy_mode": "builtin",
     "proxy_host": "",
     "proxy_port": "",
     "proxy_user": "",
     "proxy_pass": "",
+    # Встроенный прокси
+    "dpi_port": 1080,
+    "dpi_method": "tlsrec+split",
+    "dpi_all_hosts": False,
     # Сеть
     "timeout": 20,  # секунд на одно соединение
     "retries": 3,  # сколько раз повторять при сбое
@@ -49,12 +52,13 @@ def save_settings(settings: dict) -> None:
         pass
 
 
-def proxy_url(settings: dict) -> str:
-    """Собирает адрес прокси вида http://логин:пароль@хост:порт. Пусто, если прокси выключен."""
+def external_proxy_url(settings: dict) -> str:
+    """Адрес внешнего HTTP или SOCKS5 прокси с логином и паролем. Пусто для других режимов."""
+    mode = settings.get("proxy_mode")
     host = settings.get("proxy_host", "").strip()
-    if not settings.get("proxy_enabled") or not host:
+    if mode not in ("HTTP", "SOCKS5") or not host:
         return ""
-    scheme = "socks5" if settings.get("proxy_type") == "SOCKS5" else "http"
+    scheme = "socks5" if mode == "SOCKS5" else "http"
     auth = ""
     user = settings.get("proxy_user", "")
     if user:
@@ -67,10 +71,17 @@ def proxy_url(settings: dict) -> str:
     return f"{scheme}://{auth}{host}" + (f":{port}" if port else "")
 
 
-def net_options(settings: dict) -> dict:
-    """Сетевые настройки для yt-dlp и проверки соединения."""
+def net_options(settings: dict, dpi_port: int | None = None) -> dict:
+    """Сетевые настройки для yt-dlp и проверок.
+
+    dpi_port — фактический порт запущенного встроенного прокси (None, если он не запущен).
+    """
+    if settings.get("proxy_mode") == "builtin":
+        proxy = f"http://127.0.0.1:{dpi_port}" if dpi_port else ""
+    else:
+        proxy = external_proxy_url(settings)
     return {
-        "proxy": proxy_url(settings),
+        "proxy": proxy,
         "timeout": int(settings["timeout"]),
         "retries": int(settings["retries"]),
     }

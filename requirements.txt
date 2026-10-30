@@ -4,3 +4,4 @@ requests>=2.31
 Pillow>=10.0
 imageio-ffmpeg>=0.5.1
 PySocks>=1.7
+./dpi-proxy[probe]

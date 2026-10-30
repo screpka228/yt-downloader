@@ -1,0 +1,61 @@
+Metadata-Version: 2.4
+Name: dpi-proxy
+Version: 0.1.0
+Summary: Локальный прокси (SOCKS5 и HTTP CONNECT) с обходом DPI через фрагментацию TLS ClientHello
+Author: screpka228
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: probe
+Requires-Dist: requests>=2.31; extra == "probe"
+Requires-Dist: PySocks>=1.7; extra == "probe"
+Provides-Extra: test
+Requires-Dist: requests>=2.31; extra == "test"
+Requires-Dist: PySocks>=1.7; extra == "test"
+
+# dpi-proxy
+
+Локальный прокси на Python (asyncio) с обходом DPI. Слушает `127.0.0.1`, принимает
+SOCKS5 и HTTP (CONNECT и обычный GET) на одном порту.
+
+Для TLS-соединений к нужным доменам первый пакет ClientHello режется так, что DPI
+не может прочитать имя сервера (SNI). Сервер собирает пакет сам. Трафик никуда не
+пересылается через третьих лиц: прокси соединяется с сервером напрямую.
+
+## Установка
+
+```bash
+pip install ./dpi-proxy            # только ядро, без зависимостей
+pip install "./dpi-proxy[probe]"   # плюс функция probe() для проверки соединения
+```
+
+## Использование
+
+```python
+from dpi_proxy import DpiProxy, probe
+
+proxy = DpiProxy(port=1080, method="tlsrec+split", all_hosts=False)
+port = proxy.start()  # вернёт фактический порт (если 1080 занят, возьмёт следующий)
+print(probe(f"http://127.0.0.1:{port}", ["https://www.youtube.com/generate_204"]))
+proxy.stop()
+```
+
+Методы обхода: `none` (без обхода), `split` (разрез TCP посередине имени в SNI),
+`tlsrec` (разрез TLS-записи внутри SNI), `tlsrec+split` (оба, по умолчанию).
+
+Логирование: `dpi_proxy.configure_file_logging(Path("proxy.log"))` пишет лог с ротацией.
+
+## Тесты
+
+```bash
+pip install -e "./dpi-proxy[test]"
+cd dpi-proxy
+python -m unittest discover -s tests -v
+```
+
+Тесты с example.com требуют доступа в интернет.
+
+## Лицензия
+
+MIT. Автор: screpka228. При использовании укажите автора и ссылку на
+https://github.com/screpka228/yt-downloader.
