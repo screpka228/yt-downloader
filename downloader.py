@@ -67,6 +67,7 @@ class Job:
     network_error: bool = False
     subtitles: list = field(default_factory=list)  # коды языков, пусто — без субтитров
     embed_subs: bool = False  # встраивать субтитры в файл (только для видео)
+    default_sub: str = ""  # язык субтитра, который включается сам (пусто — никакой)
     thumbnail: bool = False
     container: str = "mp4"  # mp4 или mkv (для видео)
     progress: str = ""  # последняя строка прогресса для очереди
@@ -265,12 +266,15 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
             "subtitleslangs": list(job.subtitles),
         }
         if job.embed_subs and job.mode == "video":
-            # Встраиваем в файл и помечаем первую дорожку как основную, чтобы плеер и ТВ включали её сами.
+            # Встраиваем в файл. Сначала снимаем флаг «основной» со всех дорожек, иначе плееры
+            # включают субтитры сами. Основной ставим только выбранному языку.
             opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle"}]
-            default_track = ["-disposition:s:0", "default"]
+            track_flags = ["-disposition:s", "0"]
+            if job.default_sub:
+                track_flags += [f"-disposition:s:m:language:{job.default_sub}", "default"]
             opts["postprocessor_args"] = {
-                "ffmpegembedsubtitle": default_track,
-                "embedsubtitle": default_track,
+                "ffmpegembedsubtitle": track_flags,
+                "embedsubtitle": track_flags,
             }
     if job.thumbnail and job.mode == "video":
         # Обложка сохраняется отдельным файлом. Для музыки она и так встраивается в файл.

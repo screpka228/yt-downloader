@@ -219,7 +219,7 @@ def subtitle_label(code: str, auto: bool) -> str:
 class SubtitleDialog(ctk.CTkToplevel):
     """Окно выбора языков субтитров. on_done(список кодов, встраивать?) вызывается при «Готово»."""
 
-    def __init__(self, master, langs, selected, embed, on_done):
+    def __init__(self, master, langs, selected, embed, default, on_done):
         super().__init__(master)
         self.title("Субтитры")
         self.geometry("460x580")
@@ -263,6 +263,15 @@ class SubtitleDialog(ctk.CTkToplevel):
             self, text="Отдельные файлы .vtt сохраняются в любом случае.",
             text_color=MUTED, font=ctk.CTkFont(size=12),
         ).pack(anchor="w", padx=22)
+        default_row = ctk.CTkFrame(self, fg_color="transparent")
+        default_row.pack(fill="x", padx=22, pady=(12, 0))
+        ctk.CTkLabel(default_row, text="Включать сам:", text_color=TEXT).pack(side="left")
+        self.default_var = ctk.StringVar(value=default or "нет")
+        ctk.CTkOptionMenu(
+            default_row, values=["нет"] + [code for code, _ in langs], variable=self.default_var,
+            width=130, fg_color=FIELD, button_color=ACCENT, button_hover_color=ACCENT_HI,
+            dropdown_fg_color=CARD_HI,
+        ).pack(side="left", padx=10)
         primary(self, "Готово", self._done, height=44).pack(fill="x", padx=22, pady=18)
 
     def _select_all(self):
@@ -275,7 +284,10 @@ class SubtitleDialog(ctk.CTkToplevel):
 
     def _done(self):
         selected = [code for code, var in self.vars.items() if var.get()]
-        self.on_done(selected, bool(self.embed_var.get()))
+        default = self.default_var.get()
+        if default not in selected:
+            default = ""
+        self.on_done(selected, bool(self.embed_var.get()), default)
         self.destroy()
 
 
@@ -307,6 +319,7 @@ class App(ctk.CTk):
         self._last_fetched = ""
         self.sub_selection = list(self.settings["subs_langs"])
         self.sub_embed = bool(self.settings["subs_embed"])
+        self.sub_default = self.settings["subs_default"]
         self.folder_var = ctk.StringVar(value=self.settings["download_dir"])
         self.ffmpeg_dir = deps.ensure_ffmpeg()
         self.dpi = DpiProxy(
@@ -523,8 +536,12 @@ class App(ctk.CTk):
             options, list(AUDIO_FORMATS), 200, command=lambda _v: self._update_size()
         )
         self.container_menu = option_menu(options, ["mp4", "mkv"], 110)
-        self.sub_btn = ghost(options, "🗒  Субтитры", self._open_subtitles, width=140)
-        self.sub_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
+        # Субтитры — отдельной строкой под качеством, чтобы не обрезались на узком окне.
+        self.sub_row = ctk.CTkFrame(preview, fg_color="transparent")
+        self.sub_row.grid(row=3, column=1, sticky="w", padx=(6, 18), pady=(0, 18))
+        self.sub_row.grid_remove()
+        self.sub_btn = ghost(self.sub_row, "🗒  Субтитры", self._open_subtitles, width=140)
+        self.sub_label = ctk.CTkLabel(self.sub_row, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
         self.size_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
         folder = card(page)
@@ -543,6 +560,9 @@ class App(ctk.CTk):
 
         primary(page, "＋  Добавить в очередь", self._add_to_queue, height=52).grid(
             row=4, column=0, sticky="ew", pady=(6, 0)
+        )
+        ghost(page, "📄  Добавить ссылки из файла (.txt)", self._add_from_file, height=40).grid(
+            row=5, column=0, sticky="ew", pady=(10, 0)
         )
 
     def _paste(self):
@@ -577,8 +597,10 @@ class App(ctk.CTk):
         self.sub_label.pack_forget()
         if is_video:
             self.container_menu.pack(side="left", padx=(10, 0))
-            self.sub_btn.pack(side="left", padx=(14, 0))
+            self.sub_btn.pack(side="left")
             self.sub_label.pack(side="left", padx=10)
+        if not is_video:
+            self.sub_row.grid_remove()
         self.size_label.pack(side="left", padx=14)
         self._update_size()
         self._update_sub_label()
@@ -587,12 +609,16 @@ class App(ctk.CTk):
         if self.info is None or self.info.is_playlist:
             self._status("Сначала вставьте ссылку на одно видео, тогда появится список языков", "error")
             return
-        SubtitleDialog(self, self.info.sub_langs, self.sub_selection, self.sub_embed, self._set_subtitles)
+        SubtitleDialog(
+            self, self.info.sub_langs, self.sub_selection, self.sub_embed, self.sub_default,
+            self._set_subtitles,
+        )
 
-    def _set_subtitles(self, selected: list, embed: bool):
+    def _set_subtitles(self, selected: list, embed: bool, default: str):
         self.sub_selection = selected
         self.sub_embed = embed
-        self.settings.update(subs_langs=selected, subs_embed=embed)
+        self.sub_default = default
+        self.settings.update(subs_langs=selected, subs_embed=embed, subs_default=default)
         save_settings(self.settings)
         self._update_sub_label()
 
@@ -679,6 +705,7 @@ class App(ctk.CTk):
             container=self.container_menu.get(),
             subtitles=list(self.sub_selection) if self.mode_switch.get() == MODE_VIDEO else [],
             embed_subs=self.sub_embed,
+            default_sub=self.sub_default if self.mode_switch.get() == MODE_VIDEO else "",
             thumbnail=bool(self.settings["thumb_enabled"]),
         )
         self._remember_download()
@@ -687,6 +714,49 @@ class App(ctk.CTk):
         self.url_entry.delete(0, "end")
         self._refresh_queue()
         self._status(f"Добавлено в очередь. Задач в списке: {len(self.jobs)}", "ok")
+        self.show_page("queue")
+
+    def _add_from_file(self):
+        """Пакетная загрузка: каждая ссылка из текстового файла становится задачей с текущими настройками."""
+        path = filedialog.askopenfilename(
+            title="Файл со ссылками",
+            filetypes=[("Текстовые файлы", "*.txt *.csv"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                lines = handle.read().splitlines()
+        except OSError as exc:
+            self._status(f"Не удалось открыть файл: {exc}", "error")
+            return
+        urls = [match.group(0) for line in lines if (match := re.search(r"https?://\S+", line))]
+        if not urls:
+            self._status("В файле нет ссылок. Каждая ссылка должна начинаться с https://", "error")
+            return
+        out_dir = self.folder_var.get().strip()
+        if not out_dir or not self._builtin_ready():
+            return
+        is_video = self.mode_switch.get() == MODE_VIDEO
+        for url in urls:
+            job = Job(
+                url=url,
+                mode="video" if is_video else "audio",
+                out_dir=out_dir,
+                net=self._current_net(),
+                height=int(self.quality_menu.get().rstrip("p")),
+                audio_format=self.audio_menu.get(),
+                container=self.container_menu.get(),
+                subtitles=list(self.sub_selection) if is_video else [],
+                embed_subs=self.sub_embed,
+                default_sub=self.sub_default if is_video else "",
+                thumbnail=bool(self.settings["thumb_enabled"]),
+            )
+            self.jobs.append(job)
+            self.jobs_queue.put(job)
+        self._remember_download()
+        self._refresh_queue()
+        self._status(f"Из файла добавлено ссылок: {len(urls)}", "ok")
         self.show_page("queue")
 
     def _show_preview(self, info, thumb: bytes | None):
@@ -718,6 +788,8 @@ class App(ctk.CTk):
             self.quality_menu.set(f"{best}p")
         self._update_size()
         self._update_sub_label()
+        if self.mode_switch.get() == MODE_VIDEO:
+            self.sub_row.grid()
         self._status("Информация получена. Выберите качество и добавьте в очередь.", "ok")
 
     def _remember_download(self):
