@@ -6,12 +6,18 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Ключ подписи лежит ВНЕ репозитория (см. README в android/). Один и тот же ключ нужен
-// для всех обновлений: иначе Android откажется ставить новую версию поверх старой.
+// Ключ подписи. Два способа:
+//  - на своём компьютере: файл ~/.yt-downloader-keys/keystore.properties
+//  - на GitHub Actions: переменные окружения KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+// Один и тот же ключ нужен для всех обновлений, иначе Android откажется ставить новую версию.
 val keysFile = File(System.getProperty("user.home"), ".yt-downloader-keys/keystore.properties")
 val keys = Properties().apply {
     if (keysFile.exists()) keysFile.inputStream().use { load(it) }
 }
+fun signing(env: String, prop: String): String? = System.getenv(env) ?: keys.getProperty(prop)
+
+// Подпись только если файл ключа реально есть; иначе собирается неподписанный APK.
+val keystorePath = signing("KEYSTORE_FILE", "storeFile")?.takeIf { File(it).exists() }
 
 android {
     namespace = "com.screpka228.ytdownloader"
@@ -27,11 +33,11 @@ android {
 
     signingConfigs {
         create("release") {
-            if (keys.isNotEmpty()) {
-                storeFile = File(keys.getProperty("storeFile"))
-                storePassword = keys.getProperty("storePassword")
-                keyAlias = keys.getProperty("keyAlias")
-                keyPassword = keys.getProperty("keyPassword")
+            if (keystorePath != null) {
+                storeFile = File(keystorePath)
+                storePassword = signing("KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signing("KEY_ALIAS", "keyAlias")
+                keyPassword = signing("KEY_PASSWORD", "keyPassword")
             }
         }
     }
@@ -39,7 +45,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (keys.isNotEmpty()) signingConfig = signingConfigs.getByName("release")
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -54,7 +60,7 @@ android {
 }
 
 dependencies {
-    // Готовые yt-dlp и ffmpeg для Android (без собственного обхода блокировок).
+    // Готовые yt-dlp и ffmpeg для Android: понимают все сайты, которые поддерживает yt-dlp.
     val youtubedlVersion = "0.18.1"
     implementation("io.github.junkfood02.youtubedl-android:library:$youtubedlVersion")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$youtubedlVersion")

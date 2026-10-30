@@ -596,7 +596,7 @@ class App(ctk.CTk):
         self.url_var = ctk.StringVar()
         self.url_var.trace_add("write", self._on_url_changed)
         self.url_entry = field(
-            url_card, height=44, placeholder_text="https://www.youtube.com/watch?v=…",
+            url_card, height=44, placeholder_text="Ссылка: YouTube, TikTok, Rutube, VK и другие сайты",
             textvariable=self.url_var,
         )
         self.url_entry.grid(row=0, column=0, sticky="ew", padx=(18, 10), pady=18)
@@ -1251,7 +1251,7 @@ class App(ctk.CTk):
         self.dpi_all_switch.grid(row=2, column=2, sticky="w", pady=(4, 10))
         ctk.CTkLabel(
             self.builtin_frame,
-            text="Обход действует только для YouTube и связанных доменов, остальные сайты идут напрямую.",
+            text="Обход применяется к доменам YouTube. Другие сайты (TikTok, Rutube, VK и т.д.) идут через прокси без изменений.",
             text_color=MUTED, anchor="w", wraplength=700, justify="left", font=ctk.CTkFont(size=12),
         ).grid(row=3, column=0, columnspan=3, sticky="ew")
 

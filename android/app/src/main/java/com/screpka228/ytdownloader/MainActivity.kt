@@ -53,7 +53,7 @@ fun DownloadScreen() {
         OutlinedTextField(
             value = url,
             onValueChange = { url = it },
-            label = { Text("Ссылка") },
+            label = { Text("Ссылка: YouTube, TikTok, Rutube, VK и другие") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
