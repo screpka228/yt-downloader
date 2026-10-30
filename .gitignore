@@ -22,3 +22,12 @@ Thumbs.db
 
 # История загрузок (создаётся программой)
 history.json
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+keystore.properties
+.yt-downloader-keys/
