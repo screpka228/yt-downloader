@@ -16,3 +16,6 @@ settings.json
 .idea/
 .vscode/
 Thumbs.db
+
+# Сборка пакетов
+*.egg-info/
