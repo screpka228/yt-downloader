@@ -7,7 +7,7 @@ import time
 import urllib.request
 import webbrowser
 from io import BytesIO
-from tkinter import filedialog, messagebox
+from tkinter import BooleanVar, filedialog, messagebox
 
 import customtkinter as ctk
 import requests
@@ -204,6 +204,81 @@ def format_size(size: int) -> str:
     return f"{size / 1024**2:.0f} МБ"
 
 
+SUB_NAMES = {
+    "ru": "Русский", "en": "Английский", "de": "Немецкий", "fr": "Французский",
+    "es": "Испанский", "it": "Итальянский", "pt": "Португальский", "uk": "Украинский",
+    "tr": "Турецкий", "ja": "Японский", "ko": "Корейский", "zh": "Китайский",
+}
+
+
+def subtitle_label(code: str, auto: bool) -> str:
+    name = SUB_NAMES.get(code.split("-")[0], code)
+    return f"{name} ({code}){' — авто' if auto else ''}"
+
+
+class SubtitleDialog(ctk.CTkToplevel):
+    """Окно выбора языков субтитров. on_done(список кодов, встраивать?) вызывается при «Готово»."""
+
+    def __init__(self, master, langs, selected, embed, on_done):
+        super().__init__(master)
+        self.title("Субтитры")
+        self.geometry("460x580")
+        self.configure(fg_color=CARD)
+        self.transient(master)
+        self.grab_set()
+        self.on_done = on_done
+        self.vars = {}
+
+        ctk.CTkLabel(self, text="Субтитры", font=ctk.CTkFont(size=20, weight="bold"), text_color=TEXT).pack(
+            anchor="w", padx=22, pady=(18, 2))
+        ctk.CTkLabel(
+            self, text="Отметьте нужные языки. Если ничего не отмечено, субтитры не скачиваются.",
+            text_color=MUTED, wraplength=400, justify="left",
+        ).pack(anchor="w", padx=22)
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=22, pady=12)
+        ghost(bar, "Выбрать все", self._select_all, width=150).pack(side="left")
+        ghost(bar, "Снять все", self._clear_all, width=150).pack(side="left", padx=10)
+
+        listing = ctk.CTkScrollableFrame(self, fg_color=FIELD, corner_radius=12)
+        listing.pack(fill="both", expand=True, padx=22)
+        if not langs:
+            ctk.CTkLabel(listing, text="У этого видео нет субтитров.", text_color=MUTED).pack(
+                anchor="w", padx=12, pady=12)
+        for code, auto in langs:
+            var = BooleanVar(value=code in selected)
+            ctk.CTkCheckBox(
+                listing, text=subtitle_label(code, auto), variable=var, fg_color=ACCENT,
+                hover_color=ACCENT_HI, text_color=TEXT,
+            ).pack(anchor="w", padx=12, pady=5)
+            self.vars[code] = var
+
+        self.embed_var = BooleanVar(value=embed)
+        ctk.CTkSwitch(
+            self, text="Встроить субтитры в видеофайл (mp4/mkv)", variable=self.embed_var,
+            progress_color=ACCENT, text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
+        ).pack(anchor="w", padx=22, pady=(14, 6))
+        ctk.CTkLabel(
+            self, text="Отдельные файлы .vtt сохраняются в любом случае.",
+            text_color=MUTED, font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", padx=22)
+        primary(self, "Готово", self._done, height=44).pack(fill="x", padx=22, pady=18)
+
+    def _select_all(self):
+        for var in self.vars.values():
+            var.set(True)
+
+    def _clear_all(self):
+        for var in self.vars.values():
+            var.set(False)
+
+    def _done(self):
+        selected = [code for code, var in self.vars.items() if var.get()]
+        self.on_done(selected, bool(self.embed_var.get()))
+        self.destroy()
+
+
 # ---------- Главное окно ----------
 
 
@@ -230,6 +305,8 @@ class App(ctk.CTk):
         self.pages = {}
         self._fetch_after_id = None
         self._last_fetched = ""
+        self.sub_selection = list(self.settings["subs_langs"])
+        self.sub_embed = bool(self.settings["subs_embed"])
         self.folder_var = ctk.StringVar(value=self.settings["download_dir"])
         self.ffmpeg_dir = deps.ensure_ffmpeg()
         self.dpi = DpiProxy(
@@ -446,6 +523,8 @@ class App(ctk.CTk):
             options, list(AUDIO_FORMATS), 200, command=lambda _v: self._update_size()
         )
         self.container_menu = option_menu(options, ["mp4", "mkv"], 110)
+        self.sub_btn = ghost(options, "🗒  Субтитры", self._open_subtitles, width=140)
+        self.sub_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
         self.size_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
         folder = card(page)
@@ -494,10 +573,35 @@ class App(ctk.CTk):
         self.size_label.pack_forget()
         self.container_menu.pack_forget()
         (self.quality_menu if is_video else self.audio_menu).pack(side="left")
+        self.sub_btn.pack_forget()
+        self.sub_label.pack_forget()
         if is_video:
             self.container_menu.pack(side="left", padx=(10, 0))
+            self.sub_btn.pack(side="left", padx=(14, 0))
+            self.sub_label.pack(side="left", padx=10)
         self.size_label.pack(side="left", padx=14)
         self._update_size()
+        self._update_sub_label()
+
+    def _open_subtitles(self):
+        if self.info is None or self.info.is_playlist:
+            self._status("Сначала вставьте ссылку на одно видео, тогда появится список языков", "error")
+            return
+        SubtitleDialog(self, self.info.sub_langs, self.sub_selection, self.sub_embed, self._set_subtitles)
+
+    def _set_subtitles(self, selected: list, embed: bool):
+        self.sub_selection = selected
+        self.sub_embed = embed
+        self.settings.update(subs_langs=selected, subs_embed=embed)
+        save_settings(self.settings)
+        self._update_sub_label()
+
+    def _update_sub_label(self):
+        if not self.sub_selection:
+            self.sub_label.configure(text="Субтитры: нет")
+            return
+        text = f"Субтитры: {', '.join(self.sub_selection)}"
+        self.sub_label.configure(text=text + (" • в файл" if self.sub_embed else ""))
 
     def _update_size(self):
         """Оценка размера файла для выбранного качества или формата."""
@@ -573,7 +677,8 @@ class App(ctk.CTk):
             height=int(self.quality_menu.get().rstrip("p")),
             audio_format=self.audio_menu.get(),
             container=self.container_menu.get(),
-            subtitles=bool(self.settings["subs_enabled"]),
+            subtitles=list(self.sub_selection) if self.mode_switch.get() == MODE_VIDEO else [],
+            embed_subs=self.sub_embed,
             thumbnail=bool(self.settings["thumb_enabled"]),
         )
         self._remember_download()
@@ -612,6 +717,7 @@ class App(ctk.CTk):
             best = next((h for h in choices if h <= preferred), choices[-1])
             self.quality_menu.set(f"{best}p")
         self._update_size()
+        self._update_sub_label()
         self._status("Информация получена. Выберите качество и добавьте в очередь.", "ok")
 
     def _remember_download(self):
@@ -863,11 +969,6 @@ class App(ctk.CTk):
         ghost(folder_card, "Выбрать папку", self._choose_folder, width=160).grid(
             row=1, column=1, padx=(0, 20), pady=(0, 6)
         )
-        self.subs_switch = ctk.CTkSwitch(
-            folder_card, text="Скачивать субтитры (русские и английские)", progress_color=ACCENT,
-            text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
-        )
-        self.subs_switch.grid(row=2, column=0, columnspan=2, sticky="w", padx=20, pady=(8, 6))
         self.thumb_switch = ctk.CTkSwitch(
             folder_card, text="Сохранять обложку видео отдельным файлом", progress_color=ACCENT,
             text_color=TEXT, button_color=TEXT, button_hover_color=MUTED,
@@ -1016,7 +1117,6 @@ class App(ctk.CTk):
         self._set_entry(self.retries_entry, s["retries"])
         self.auto_ytdlp_switch.select() if s["auto_update_ytdlp"] else self.auto_ytdlp_switch.deselect()
         self.check_app_switch.select() if s["check_app_update"] else self.check_app_switch.deselect()
-        self.subs_switch.select() if s["subs_enabled"] else self.subs_switch.deselect()
         self.thumb_switch.select() if s["thumb_enabled"] else self.thumb_switch.deselect()
         self._refresh_dpi_status()
 
@@ -1062,7 +1162,6 @@ class App(ctk.CTk):
             retries=retries,
             auto_update_ytdlp=bool(self.auto_ytdlp_switch.get()),
             check_app_update=bool(self.check_app_switch.get()),
-            subs_enabled=bool(self.subs_switch.get()),
             thumb_enabled=bool(self.thumb_switch.get()),
         )
         return form

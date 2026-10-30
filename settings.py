@@ -31,7 +31,8 @@ DEFAULTS = {
     "auto_update_ytdlp": True,
     "check_app_update": True,
     # Дополнительно при загрузке
-    "subs_enabled": False,
+    "subs_langs": [],  # коды языков субтитров, пусто — без субтитров
+    "subs_embed": False,
     "thumb_enabled": False,
 }
 

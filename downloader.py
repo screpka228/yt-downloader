@@ -43,6 +43,7 @@ class VideoInfo:
     thumbnail: str | None
     sizes: dict = field(default_factory=dict)  # высота -> размер видеопотока, байт
     audio_size: int | None = None  # размер лучшего аудиопотока, байт
+    sub_langs: list = field(default_factory=list)  # [(код языка, автоматические?)]
 
 
 @dataclass
@@ -64,7 +65,8 @@ class Job:
     status: str = "waiting"  # waiting, running, done, error, cancelled
     message: str = ""
     network_error: bool = False
-    subtitles: bool = False
+    subtitles: list = field(default_factory=list)  # коды языков, пусто — без субтитров
+    embed_subs: bool = False  # встраивать субтитры в файл (только для видео)
     thumbnail: bool = False
     container: str = "mp4"  # mp4 или mkv (для видео)
     progress: str = ""  # последняя строка прогресса для очереди
@@ -138,6 +140,13 @@ def quality_choices(heights: list[int]) -> list[int]:
     return [h for h in VIDEO_HEIGHTS if h <= top] or [top]
 
 
+def _subtitle_languages(info: dict) -> list[tuple[str, bool]]:
+    """Языки субтитров: сначала авторские, потом автоматические (не больше 30)."""
+    manual = sorted((info.get("subtitles") or {}).keys())
+    auto = sorted(c for c in (info.get("automatic_captions") or {}) if c not in manual)
+    return [(c, False) for c in manual] + [(c, True) for c in auto[:30]]
+
+
 def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
     """Получает название, длительность, превью и доступные качества без скачивания."""
     opts = _base_opts(net, ffmpeg_dir) | {"skip_download": True, "extract_flat": "in_playlist"}
@@ -184,6 +193,7 @@ def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
         info.get("thumbnail"),
         sizes,
         audio_size,
+        sub_langs=_subtitle_languages(info),
     )
 
 
@@ -248,8 +258,20 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
         }
 
     if job.subtitles:
-        # Субтитры сохраняются отдельными файлами рядом с видео (.ru.vtt / .en.vtt).
-        opts |= {"writesubtitles": True, "subtitleslangs": ["ru", "en"]}
+        # Субтитры сохраняются отдельными файлами рядом с видео (например, .ru.vtt).
+        opts |= {
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": list(job.subtitles),
+        }
+        if job.embed_subs and job.mode == "video":
+            # Встраиваем в файл и помечаем первую дорожку как основную, чтобы плеер и ТВ включали её сами.
+            opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle"}]
+            default_track = ["-disposition:s:0", "default"]
+            opts["postprocessor_args"] = {
+                "ffmpegembedsubtitle": default_track,
+                "embedsubtitle": default_track,
+            }
     if job.thumbnail and job.mode == "video":
         # Обложка сохраняется отдельным файлом. Для музыки она и так встраивается в файл.
         opts["writethumbnail"] = True
