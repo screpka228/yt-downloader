@@ -390,6 +390,8 @@ class App(ctk.CTk):
 
         options = ctk.CTkFrame(preview, fg_color="transparent")
         options.grid(row=2, column=1, sticky="w", padx=(6, 18), pady=(14, 20))
+        self.options_frame = options
+        options.grid_remove()  # качество и формат появятся после того, как дана ссылка
         self.option_label = ctk.CTkLabel(options, text="Качество", text_color=MUTED)
         self.option_label.pack(side="left", padx=(0, 10))
         self.quality_menu = option_menu(options, [f"{h}p" for h in VIDEO_HEIGHTS], 160)
@@ -494,6 +496,7 @@ class App(ctk.CTk):
 
     def _show_preview(self, info, thumb: bytes | None):
         self.info = info
+        self.options_frame.grid()
         self.thumb_image = None
         if thumb:
             try:
@@ -652,6 +655,40 @@ class App(ctk.CTk):
             self._status(job.message, "error")
         else:
             self._status(f"Загрузка: {job.message or 'отменена'}")
+        if job.status == "error" and job.network_error:
+            self._offer_bypass(lambda j=job: self._requeue(j))
+
+    def _requeue(self, job: Job):
+        """Ставит задачу в очередь заново с текущими сетевыми настройками."""
+        job.net = self._current_net()
+        job.status = "waiting"
+        job.message = ""
+        job.network_error = False
+        job.cancel.clear()
+        self.jobs_queue.put(job)
+        self._refresh_queue()
+        self._status("Повторяю загрузку с встроенным обходом…")
+
+    def _offer_bypass(self, retry):
+        """Сеть или блокировка: предлагаем включить встроенный обход и повторить действие."""
+        if self.settings["proxy_mode"] == "builtin":
+            self._status("Сетевая ошибка, хотя встроенный обход включён. Попробуйте «Автоподбор метода» в настройках.", "error")
+            return
+        if not messagebox.askyesno(
+            "Не удалось подключиться",
+            "Похоже, сеть блокирует YouTube.\n\n"
+            "Включить встроенный обход блокировок? Внешние серверы и VPN не нужны. "
+            "Программа запустит локальный прокси на вашем компьютере и повторит действие.",
+        ):
+            return
+        self.settings["proxy_mode"] = "builtin"
+        save_settings(self.settings)
+        self._load_settings_form()
+        self._apply_dpi(self.settings)
+        if self.dpi.running:
+            retry()
+        else:
+            self._status(f"Встроенный прокси не запустился: {self.dpi_error}", "error")
 
     # ---------- Страница «Настройки» ----------
 
@@ -948,7 +985,7 @@ class App(ctk.CTk):
         try:
             info = downloader.fetch_info(url, net, self.ffmpeg_dir)
         except UserError as exc:
-            self.events.put(("preview_err", str(exc)))
+            self.events.put(("preview_err", str(exc), exc.network))
             return
         except Exception as exc:
             self.events.put(("preview_err", f"Непредвиденная ошибка: {exc}"))
@@ -987,6 +1024,7 @@ class App(ctk.CTk):
             except UserError as exc:
                 job.status = "error"
                 job.message = str(exc)
+                job.network_error = exc.network
             except Exception as exc:
                 job.status = "error"
                 job.message = f"Непредвиденная ошибка: {exc}"
@@ -1061,6 +1099,8 @@ class App(ctk.CTk):
             self._show_preview(event[1], event[2])
         elif kind == "preview_err":
             self._status(event[1], "error")
+            if event[2]:
+                self._offer_bypass(self._fetch_clicked)
         elif kind == "started":
             self.active_job = event[1]
             self.cancel_btn.configure(state="normal")

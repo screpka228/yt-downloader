@@ -21,7 +21,15 @@ class Cancelled(Exception):
 
 
 class UserError(Exception):
-    """Ошибка с понятным текстом для пользователя."""
+    """Ошибка с понятным текстом для пользователя.
+
+    network=True означает, что причина, вероятно, в сети или блокировке — тогда
+    программа предложит включить встроенный обход.
+    """
+
+    def __init__(self, message: str, network: bool = False):
+        super().__init__(message)
+        self.network = network
 
 
 @dataclass
@@ -53,6 +61,7 @@ class Job:
     audio_format: str = "mp3 (320 kbps)"
     status: str = "waiting"  # waiting, running, done, error, cancelled
     message: str = ""
+    network_error: bool = False
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
@@ -101,6 +110,20 @@ def translate_error(exc: Exception) -> str:
     return f"Ошибка загрузки: {exc}"
 
 
+NETWORK_HINTS = (
+    "unable to download webpage", "getaddrinfo", "name or service not known",
+    "network is unreachable", "timed out", "temporary failure", "failed to resolve",
+    "connection", "no route to host", "http error 403", "http error 429",
+    "too many requests", "proxy", "socks",
+)
+
+
+def is_network_error(exc: Exception) -> bool:
+    """Похоже ли исключение на сетевую ошибку или блокировку."""
+    text = str(exc).lower()
+    return any(hint in text for hint in NETWORK_HINTS)
+
+
 def quality_choices(heights: list[int]) -> list[int]:
     """Список качеств для меню: стандартные, не выше максимума, который есть у видео."""
     if not heights:
@@ -116,7 +139,7 @@ def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except YoutubeDLError as exc:
-        raise UserError(translate_error(exc)) from exc
+        raise UserError(translate_error(exc), is_network_error(exc)) from exc
 
     if info is None:
         raise UserError("Не удалось получить данные по этой ссылке.")
@@ -212,4 +235,4 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
                 ydl.add_post_processor(_ArtistFromUploader(), when="pre_process")
             ydl.download([job.url])
     except YoutubeDLError as exc:
-        raise UserError(translate_error(exc)) from exc
+        raise UserError(translate_error(exc), is_network_error(exc)) from exc

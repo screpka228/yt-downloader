@@ -14,7 +14,7 @@ DEFAULTS = {
     "video_quality": 1080,
     "audio_format": "mp3 (320 kbps)",
     # Прокси: builtin (встроенный обход DPI), HTTP, SOCKS5 или off (без прокси)
-    "proxy_mode": "builtin",
+    "proxy_mode": "off",  # встроенный обход включается пользователем или по запросу при сбое
     "proxy_host": "",
     "proxy_port": "",
     "proxy_user": "",
