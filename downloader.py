@@ -41,6 +41,8 @@ class VideoInfo:
     duration: int | None
     heights: list[int]
     thumbnail: str | None
+    sizes: dict = field(default_factory=dict)  # высота -> размер видеопотока, байт
+    audio_size: int | None = None  # размер лучшего аудиопотока, байт
 
 
 @dataclass
@@ -161,6 +163,15 @@ def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
         },
         reverse=True,
     )
+    formats = info.get("formats") or []
+    sizes: dict[int, int] = {}
+    audio_size = None
+    for f in formats:
+        size = f.get("filesize") or f.get("filesize_approx") or 0
+        if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none"):
+            audio_size = max(audio_size or 0, size) or None
+        elif f.get("height") and f.get("vcodec") != "none" and size:
+            sizes[f["height"]] = max(sizes.get(f["height"], 0), size)
     return VideoInfo(
         url,
         info.get("title") or "Без названия",
@@ -169,6 +180,8 @@ def fetch_info(url: str, net: dict, ffmpeg_dir: str | None) -> VideoInfo:
         info.get("duration"),
         heights,
         info.get("thumbnail"),
+        sizes,
+        audio_size,
     )
 
 

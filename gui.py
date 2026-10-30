@@ -109,18 +109,41 @@ def ghost(parent, text, command, height=38, **kwargs):
     )
 
 
+def bind_clipboard_keys(entry):
+    """Ctrl+V/C/X/A работают на любой раскладке.
+
+    На русской раскладке V — это «М», и стандартные сочетания не срабатывают.
+    Поэтому смотрим на физическую клавишу (код), а не на букву.
+    """
+    events = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>"}
+
+    def on_ctrl(event):
+        if event.keycode in events:
+            event.widget.event_generate(events[event.keycode])
+            return "break"
+        if event.keycode == 65:  # A — выделить всё
+            event.widget.select_range(0, "end")
+            return "break"
+        return None
+
+    entry._entry.bind("<Control-Key>", on_ctrl)
+
+
 def field(parent, height=38, **kwargs):
-    return ctk.CTkEntry(
+    entry = ctk.CTkEntry(
         parent, height=height, corner_radius=12, fg_color=FIELD,
         border_color=BORDER, text_color=TEXT, **kwargs,
     )
+    bind_clipboard_keys(entry)
+    return entry
 
 
-def option_menu(parent, values, width=170):
+def option_menu(parent, values, width=170, command=None):
     return ctk.CTkOptionMenu(
         parent, values=values, width=width, height=38, corner_radius=12,
         fg_color=FIELD, button_color=ACCENT, button_hover_color=ACCENT_HI,
         dropdown_fg_color=CARD_HI, dropdown_hover_color="#2a3152", text_color=TEXT,
+        command=command,
     )
 
 
@@ -172,6 +195,12 @@ def format_eta(seconds: int) -> str:
 
 def format_duration(seconds: int | None) -> str:
     return format_eta(seconds) if seconds else "—"
+
+
+def format_size(size: int) -> str:
+    if size >= 1024**3:
+        return f"{size / 1024**3:.2f} ГБ"
+    return f"{size / 1024**2:.0f} МБ"
 
 
 # ---------- Главное окно ----------
@@ -400,8 +429,13 @@ class App(ctk.CTk):
         options.grid_remove()  # качество и формат появятся после того, как дана ссылка
         self.option_label = ctk.CTkLabel(options, text="Качество", text_color=MUTED)
         self.option_label.pack(side="left", padx=(0, 10))
-        self.quality_menu = option_menu(options, [f"{h}p" for h in VIDEO_HEIGHTS], 160)
-        self.audio_menu = option_menu(options, list(AUDIO_FORMATS), 200)
+        self.quality_menu = option_menu(
+            options, [f"{h}p" for h in VIDEO_HEIGHTS], 160, command=lambda _v: self._update_size()
+        )
+        self.audio_menu = option_menu(
+            options, list(AUDIO_FORMATS), 200, command=lambda _v: self._update_size()
+        )
+        self.size_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
         folder = card(page)
         folder.grid(row=3, column=0, sticky="ew", pady=14)
@@ -446,7 +480,27 @@ class App(ctk.CTk):
         self.option_label.configure(text="Качество" if is_video else "Формат")
         self.quality_menu.pack_forget()
         self.audio_menu.pack_forget()
+        self.size_label.pack_forget()
         (self.quality_menu if is_video else self.audio_menu).pack(side="left")
+        self.size_label.pack(side="left", padx=14)
+        self._update_size()
+
+    def _update_size(self):
+        """Оценка размера файла для выбранного качества или формата."""
+        info = self.info
+        if info is None or info.is_playlist:
+            self.size_label.configure(text="")
+            return
+        if self.mode_switch.get() == MODE_AUDIO:
+            if self.audio_menu.get().startswith("mp3") and info.duration:
+                size = info.duration * 320000 // 8  # 320 kbps
+            else:
+                size = info.audio_size
+        else:
+            height = int(self.quality_menu.get().rstrip("p"))
+            video = info.sizes.get(height)
+            size = video + info.audio_size if video and info.audio_size else video
+        self.size_label.configure(text=f"≈ {format_size(size)}" if size else "размер неизвестен")
 
     def _url(self) -> str:
         return self.url_entry.get().strip()
@@ -529,6 +583,7 @@ class App(ctk.CTk):
             preferred = int(self.settings["video_quality"])
             best = next((h for h in choices if h <= preferred), choices[-1])
             self.quality_menu.set(f"{best}p")
+        self._update_size()
         self._status("Информация получена. Выберите качество и добавьте в очередь.", "ok")
 
     def _remember_download(self):
