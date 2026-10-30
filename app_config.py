@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "YT Downloader"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 GITHUB_REPO = "screpka228/yt-downloader"
 
 

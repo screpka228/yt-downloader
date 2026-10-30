@@ -66,6 +66,8 @@ class Job:
     network_error: bool = False
     subtitles: bool = False
     thumbnail: bool = False
+    container: str = "mp4"  # mp4 или mkv (для видео)
+    progress: str = ""  # последняя строка прогресса для очереди
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
@@ -227,7 +229,8 @@ def run_job(job: Job, ffmpeg_dir: str | None, on_progress) -> None:
         opts |= {
             "format": f"bv*[height<={job.height}]+ba/b[height<={job.height}]",
             # Для 4K mp4 не всегда подходит (кодеки VP9/Opus), тогда yt-dlp сохранит mkv.
-            "merge_output_format": "mp4/mkv",
+            # mp4 по умолчанию; если для кодеков mp4 не подходит, yt-dlp сохранит mkv.
+            "merge_output_format": "mp4/mkv" if job.container == "mp4" else "mkv",
         }
     else:
         codec, bitrate = AUDIO_FORMATS[job.audio_format]

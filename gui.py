@@ -3,6 +3,7 @@ import os
 import queue
 import re
 import threading
+import time
 import urllib.request
 import webbrowser
 from io import BytesIO
@@ -207,6 +208,8 @@ def format_size(size: int) -> str:
 
 
 class App(ctk.CTk):
+    _last_queue_refresh = 0.0
+
     def __init__(self):
         super().__init__()
         self.settings = load_settings()
@@ -225,6 +228,8 @@ class App(ctk.CTk):
         self.thumb_image = None
         self.nav_buttons = {}
         self.pages = {}
+        self._fetch_after_id = None
+        self._last_fetched = ""
         self.folder_var = ctk.StringVar(value=self.settings["download_dir"])
         self.ffmpeg_dir = deps.ensure_ffmpeg()
         self.dpi = DpiProxy(
@@ -395,7 +400,12 @@ class App(ctk.CTk):
         url_card = card(page)
         url_card.grid(row=1, column=0, sticky="ew", pady=(22, 14))
         url_card.grid_columnconfigure(0, weight=1)
-        self.url_entry = field(url_card, height=44, placeholder_text="https://www.youtube.com/watch?v=…")
+        self.url_var = ctk.StringVar()
+        self.url_var.trace_add("write", self._on_url_changed)
+        self.url_entry = field(
+            url_card, height=44, placeholder_text="https://www.youtube.com/watch?v=…",
+            textvariable=self.url_var,
+        )
         self.url_entry.grid(row=0, column=0, sticky="ew", padx=(18, 10), pady=18)
         ghost(url_card, "📋  Вставить", self._paste, height=44, width=140).grid(
             row=0, column=1, padx=(0, 10), pady=18
@@ -435,6 +445,7 @@ class App(ctk.CTk):
         self.audio_menu = option_menu(
             options, list(AUDIO_FORMATS), 200, command=lambda _v: self._update_size()
         )
+        self.container_menu = option_menu(options, ["mp4", "mkv"], 110)
         self.size_label = ctk.CTkLabel(options, text="", text_color=MUTED, font=ctk.CTkFont(size=13))
 
         folder = card(page)
@@ -481,7 +492,10 @@ class App(ctk.CTk):
         self.quality_menu.pack_forget()
         self.audio_menu.pack_forget()
         self.size_label.pack_forget()
+        self.container_menu.pack_forget()
         (self.quality_menu if is_video else self.audio_menu).pack(side="left")
+        if is_video:
+            self.container_menu.pack(side="left", padx=(10, 0))
         self.size_label.pack(side="left", padx=14)
         self._update_size()
 
@@ -510,6 +524,19 @@ class App(ctk.CTk):
             return True
         self._status("Неверная ссылка: адрес должен начинаться с https://", "error")
         return False
+
+    def _on_url_changed(self, *_):
+        """Ссылка изменилась (вставка, ввод): через короткую паузу получаем форматы сами."""
+        if self._fetch_after_id is not None:
+            self.after_cancel(self._fetch_after_id)
+        self._fetch_after_id = self.after(700, self._auto_fetch)
+
+    def _auto_fetch(self):
+        self._fetch_after_id = None
+        url = self._url()
+        if re.match(r"^https?://\S+$", url) and url != self._last_fetched:
+            self._last_fetched = url
+            self._fetch_clicked()
 
     def _fetch_clicked(self):
         url = self._url()
@@ -545,6 +572,7 @@ class App(ctk.CTk):
             net=self._current_net(),
             height=int(self.quality_menu.get().rstrip("p")),
             audio_format=self.audio_menu.get(),
+            container=self.container_menu.get(),
             subtitles=bool(self.settings["subs_enabled"]),
             thumbnail=bool(self.settings["thumb_enabled"]),
         )
@@ -592,6 +620,7 @@ class App(ctk.CTk):
             mode=self.mode_switch.get(),
             video_quality=int(self.quality_menu.get().rstrip("p")),
             audio_format=self.audio_menu.get(),
+            container=self.container_menu.get(),
         )
         save_settings(self.settings)
 
@@ -601,6 +630,7 @@ class App(ctk.CTk):
         self.quality_menu.set(f"{self.settings['video_quality']}p")
         audio = self.settings["audio_format"]
         self.audio_menu.set(audio if audio in AUDIO_FORMATS else next(iter(AUDIO_FORMATS)))
+        self.container_menu.set(self.settings["container"] if self.settings["container"] in ("mp4", "mkv") else "mp4")
         self._show_options()
         self._load_settings_form()
 
@@ -671,6 +701,8 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=13, weight="bold"),
             ).grid(row=0, column=1, sticky="ew", pady=(12, 0))
             details = kind
+            if job.status == "running":
+                details = job.progress or "Подготовка…"
             if job.status == "error" and job.message:
                 details = job.message
             ctk.CTkLabel(
@@ -702,7 +734,13 @@ class App(ctk.CTk):
             parts.append(f"скорость {format_speed(progress.speed)}")
         if progress.eta is not None:
             parts.append(f"осталось {format_eta(progress.eta)}")
-        self.stats_label.configure(text="    •    ".join(parts))
+        line = "    •    ".join(parts)
+        self.stats_label.configure(text=line)
+        job.progress = f"{progress.stage}: {line}"
+        # Очередь обновляем не чаще раза в полсекунды, чтобы окно не тормозило.
+        if time.monotonic() - self._last_queue_refresh > 0.5:
+            self._last_queue_refresh = time.monotonic()
+            self._refresh_queue()
 
     def _finish_job(self, job: Job):
         if job is self.active_job:
